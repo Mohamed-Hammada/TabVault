@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TabZen · Settings</title>
+  <title>TabVault · Settings</title>
   <link rel="stylesheet" href="options.css" />
 </head>
 <body>
@@ -12,13 +12,14 @@
       <div class="brand">
         <span class="dot"></span>
         <div>
-          <div class="brand-name">TabZen</div>
+          <div class="brand-name">TabVault</div>
           <div class="brand-tag">tab suspender</div>
         </div>
       </div>
 
       <nav class="nav-list">
-        <a href="#general" class="nav-item active">General</a>
+        <a href="#dashboard" class="nav-item active">Dashboard</a>
+        <a href="#general" class="nav-item">General</a>
         <a href="#never" class="nav-item">Never suspend</a>
         <a href="#filters" class="nav-item">Whitelist &amp; blacklist</a>
         <a href="#perdomain" class="nav-item">Per-domain rules</a>
@@ -26,6 +27,7 @@
         <a href="#power" class="nav-item">Power &amp; memory</a>
         <a href="#smart" class="nav-item">Smart suspension</a>
         <a href="#appearance" class="nav-item">Suspended page</a>
+        <a href="#adapters" class="nav-item">Site adapters</a>
         <a href="#sessions" class="nav-item">Sessions</a>
         <a href="#stats" class="nav-item">Stats</a>
         <a href="#shortcuts" class="nav-item">Shortcuts</a>
@@ -39,9 +41,252 @@
 
     <main class="content">
       <div id="welcome" class="welcome" hidden>
-        <h2>Welcome to TabZen</h2>
+        <h2>Welcome to TabVault</h2>
         <p>You're all set with sensible defaults — tabs will auto-suspend after 30 minutes of inactivity. Browse through the sections to fine-tune. Everything is stored locally; nothing is sent anywhere.</p>
       </div>
+
+      <div id="recovery-banner" class="recovery-banner" hidden>
+        <div class="recovery-banner-text">
+          <strong>Recovered after an unexpected shutdown.</strong>
+          <span id="recovery-banner-detail"></span>
+        </div>
+        <button type="button" id="recovery-banner-dismiss" class="recovery-banner-dismiss" title="Dismiss">Dismiss</button>
+      </div>
+
+      <!-- DASHBOARD -->
+      <section class="panel" id="dashboard-panel">
+        <header class="panel-hd">
+          <h1>Dashboard</h1>
+          <p>Real-time overview of active tabs, memory consumption, and tab state.</p>
+        </header>
+
+        <!-- Summary cards -->
+        <div class="card stats-grid" id="dashboard-overview-cards">
+          <div class="bigstat">
+            <div class="bigstat-num" id="dash-active-count">0</div>
+            <div class="bigstat-lbl">Active tabs</div>
+          </div>
+          <div class="bigstat">
+            <div class="bigstat-num" id="dash-suspended-count">0</div>
+            <div class="bigstat-lbl">Suspended tabs</div>
+          </div>
+          <div class="bigstat">
+            <div class="bigstat-num" id="dash-mem-saved">0 MB</div>
+            <div class="bigstat-lbl">RAM saved</div>
+          </div>
+          <div class="bigstat">
+            <div class="bigstat-num" id="dash-active-mem">0 MB</div>
+            <div class="bigstat-lbl">Active RAM (est)</div>
+          </div>
+          <div class="bigstat">
+            <div class="bigstat-num" id="dash-snapshot-coverage">100%</div>
+            <div class="bigstat-lbl">Snapshot coverage</div>
+          </div>
+        </div>
+
+        <!-- Memory Savings Breakdown Card -->
+        <div class="card" id="dashboard-memory-savings-card">
+          <div class="rules-hd">
+            <div class="tab-section-title">
+              <h2>Estimated Memory Savings</h2>
+              <span class="badge" id="dash-savings-pct-badge">0% saved</span>
+            </div>
+            <div class="tab-section-controls">
+              <span class="row-sub" id="dash-lifetime-saved" style="margin: 0;">Lifetime saved: 0 MB</span>
+            </div>
+          </div>
+
+          <div class="dash-savings-bar-wrap">
+            <div class="dash-savings-bar" id="dash-savings-bar" style="width: 0%"></div>
+          </div>
+          <div class="dash-savings-meta-row">
+            <div>Current Saved: <strong id="dash-savings-current">0 MB</strong></div>
+            <div>Active Memory: <strong id="dash-savings-active">0 MB</strong></div>
+            <div>Avg Saved / Tab: <strong id="dash-savings-avg">0 MB</strong></div>
+          </div>
+
+          <div id="dash-domain-savings-wrap" class="dash-domain-savings-wrap" hidden>
+            <div class="row-sub" style="margin-top: 12px; margin-bottom: 6px; font-weight: 600;">Top RAM Saver Domains:</div>
+            <ul class="dash-domain-savings-list" id="dash-domain-savings-list"></ul>
+          </div>
+
+          <div id="dash-reasons-breakdown-wrap" class="dash-domain-savings-wrap" hidden>
+            <div class="row-sub" style="margin-top: 12px; margin-bottom: 6px; font-weight: 600;">Suspension Reasons:</div>
+            <ul class="dash-domain-savings-list" id="dash-reasons-breakdown-list"></ul>
+          </div>
+        </div>
+
+        <!-- Tab Groups Section -->
+        <div class="card" id="dashboard-groups-section">
+          <div class="rules-hd">
+            <div class="tab-section-title">
+              <h2>Tab Groups</h2>
+              <span class="badge" id="dash-groups-badge">0 groups</span>
+            </div>
+            <div class="tab-section-controls">
+              <span class="row-sub" id="dash-groups-summary-text" style="margin: 0;">Organized tab collections</span>
+            </div>
+          </div>
+
+          <div id="dash-groups-loading" class="dash-loading" hidden>Loading tab groups...</div>
+          <ul class="dash-tab-list" id="dash-groups-list"></ul>
+          <div id="dash-groups-empty" class="dash-empty" hidden>
+            <div class="dash-empty-mark">✓</div>
+            <div class="dash-empty-text">No active tab groups currently.</div>
+          </div>
+        </div>
+
+        <!-- Active Tabs Section -->
+        <div class="card" id="dashboard-active-section">
+          <div class="rules-hd">
+            <div class="tab-section-title">
+              <h2>Active Tabs</h2>
+              <span class="badge" id="dash-active-badge">0 tabs</span>
+            </div>
+            <div class="tab-section-controls">
+              <input type="search" id="dash-active-search" class="dash-search-input" placeholder="Search active tabs..." />
+              <select id="dash-active-group-filter" class="dash-sort-select">
+                <option value="all">All Groups</option>
+              </select>
+              <select id="dash-active-snapshot-filter" class="dash-sort-select">
+                <option value="all">All Snapshots</option>
+                <option value="with">With Snapshot</option>
+                <option value="without">Without Snapshot</option>
+              </select>
+              <select id="dash-active-sort" class="dash-sort-select">
+                <option value="recency">Sort: Recent</option>
+                <option value="idle">Sort: Longest Idle</option>
+                <option value="memory">Sort: RAM (High → Low)</option>
+                <option value="score">Sort: Suspension Score</option>
+                <option value="title">Sort: Title</option>
+              </select>
+              <button type="button" id="dash-suspend-all-eligible" class="dash-btn dash-btn-suspend" title="Suspend all eligible tabs now">Suspend Eligible (0)</button>
+            </div>
+          </div>
+
+          <div id="dash-active-loading" class="dash-loading" hidden>Loading active tabs...</div>
+          <ul class="dash-tab-list" id="dash-active-list"></ul>
+          <div id="dash-active-empty" class="dash-empty" hidden>
+            <div class="dash-empty-mark">✓</div>
+            <div class="dash-empty-text">No active tabs found matching criteria.</div>
+          </div>
+        </div>
+
+        <!-- Suspended Tabs Section -->
+        <div class="card" id="dashboard-suspended-section">
+          <div class="rules-hd">
+            <div class="tab-section-title">
+              <h2>Suspended Tabs</h2>
+              <span class="badge" id="dash-suspended-badge">0 tabs</span>
+            </div>
+            <div class="tab-section-controls">
+              <input type="search" id="dash-suspended-search" class="dash-search-input" placeholder="Search suspended tabs..." />
+              <select id="dash-suspended-group-filter" class="dash-sort-select">
+                <option value="all">All Groups</option>
+              </select>
+              <select id="dash-suspended-reason-filter" class="dash-sort-select">
+                <option value="all">All Reasons</option>
+                <option value="idle">Idle timeout</option>
+                <option value="memory">Memory pressure</option>
+                <option value="manual">Manual</option>
+                <option value="domain">Domain rule</option>
+                <option value="battery">Battery saver</option>
+                <option value="discard">Native discard</option>
+              </select>
+              <select id="dash-suspended-snapshot-filter" class="dash-sort-select">
+                <option value="all">All Snapshots</option>
+                <option value="with">With Snapshot</option>
+                <option value="without">Without Snapshot</option>
+              </select>
+              <select id="dash-suspended-sort" class="dash-sort-select">
+                <option value="recency">Sort: Recently Suspended</option>
+                <option value="lastActive">Sort: Last Active</option>
+                <option value="memory">Sort: RAM Saved (High → Low)</option>
+                <option value="title">Sort: Title</option>
+                <option value="reason">Sort: Reason</option>
+              </select>
+              <button type="button" id="dash-restore-all" class="dash-btn dash-btn-restore" title="Restore all suspended tabs now">Restore All Tabs (0)</button>
+            </div>
+          </div>
+
+          <div id="dash-suspended-loading" class="dash-loading" hidden>Loading suspended tabs...</div>
+          <ul class="dash-tab-list" id="dash-suspended-list"></ul>
+          <div id="dash-suspended-empty" class="dash-empty" hidden>
+            <div class="dash-empty-mark">✓</div>
+            <div class="dash-empty-text">No suspended tabs currently.</div>
+          </div>
+        </div>
+
+        <!-- Recently Suspended Tabs Section -->
+        <div class="card" id="dashboard-recent-suspended-section">
+          <div class="rules-hd">
+            <div class="tab-section-title">
+              <h2>Recently Suspended</h2>
+              <span class="badge" id="dash-recent-suspended-badge">0 items</span>
+            </div>
+            <div class="tab-section-controls">
+              <input type="search" id="dash-recent-suspended-search" class="dash-search-input" placeholder="Search recent history..." />
+              <button type="button" id="dash-recent-suspended-clear" class="btn btn-subtle" title="Clear recent suspension history">Clear</button>
+            </div>
+          </div>
+
+          <div id="dash-recent-suspended-loading" class="dash-loading" hidden>Loading recent history...</div>
+          <ul class="dash-tab-list" id="dash-recent-suspended-list"></ul>
+          <div id="dash-recent-suspended-empty" class="dash-empty" hidden>
+            <div class="dash-empty-mark">✓</div>
+            <div class="dash-empty-text">No recent suspensions recorded.</div>
+          </div>
+        </div>
+
+        <!-- Recently Restored Tabs Section -->
+        <div class="card" id="dashboard-recent-restored-section">
+          <div class="rules-hd">
+            <div class="tab-section-title">
+              <h2>Recently Restored</h2>
+              <span class="badge" id="dash-recent-restored-badge">0 items</span>
+            </div>
+            <div class="tab-section-controls">
+              <input type="search" id="dash-recent-restored-search" class="dash-search-input" placeholder="Search restored tabs..." />
+              <button type="button" id="dash-recent-restored-clear" class="btn btn-subtle" title="Clear recent restoration history">Clear</button>
+            </div>
+          </div>
+
+          <div id="dash-recent-restored-loading" class="dash-loading" hidden>Loading restoration history...</div>
+          <ul class="dash-tab-list" id="dash-recent-restored-list"></ul>
+          <div id="dash-recent-restored-empty" class="dash-empty" hidden>
+            <div class="dash-empty-mark">✓</div>
+            <div class="dash-empty-text">No recent restorations recorded.</div>
+          </div>
+        </div>
+
+        <!-- Restore Failures Section -->
+        <div class="card" id="dashboard-failures-section">
+          <div class="rules-hd">
+            <div class="tab-section-title">
+              <h2>Restore Failures</h2>
+              <span class="badge" id="dash-failures-badge">0 failures</span>
+            </div>
+            <div class="tab-section-controls">
+              <input type="search" id="dash-failures-search" class="dash-search-input" placeholder="Search failures..." />
+              <select id="dash-failures-sort" class="dash-sort-select">
+                <option value="recency">Sort: Recent</option>
+                <option value="attempts">Sort: Most Retries</option>
+                <option value="title">Sort: Title</option>
+                <option value="error">Sort: Error</option>
+              </select>
+              <button type="button" id="dash-failures-retry-all" class="btn btn-subtle" title="Retry all failed tab restorations">Retry All</button>
+              <button type="button" id="dash-failures-clear" class="btn btn-subtle" title="Clear restoration failure history">Clear</button>
+            </div>
+          </div>
+
+          <div id="dash-failures-loading" class="dash-loading" hidden>Loading failure records...</div>
+          <ul class="dash-tab-list" id="dash-failures-list"></ul>
+          <div id="dash-failures-empty" class="dash-empty">
+            <div class="dash-empty-mark">✓</div>
+            <div class="dash-empty-text">No restoration failures recorded. All tab restorations are healthy.</div>
+          </div>
+        </div>
+      </section>
 
       <!-- GENERAL -->
       <section class="panel" id="general-panel">
@@ -53,7 +298,7 @@
         <div class="card">
           <div class="row">
             <div class="row-meta">
-              <div class="row-title">Enable TabZen</div>
+              <div class="row-title">Enable TabVault</div>
               <div class="row-sub">Pause all automatic suspension without losing your settings.</div>
             </div>
             <label class="switch"><input type="checkbox" id="opt-enabled" /><span></span></label>
@@ -450,6 +695,29 @@
         </div>
       </section>
 
+      <!-- SITE ADAPTERS -->
+      <section class="panel" id="adapters-panel">
+        <header class="panel-hd">
+          <h1>Site Adapters</h1>
+          <p>Deep state capture and restoration for complex web applications.</p>
+        </header>
+
+        <div class="card">
+          <div class="row">
+            <div class="row-meta">
+              <div class="row-title">Enable site adapters</div>
+              <div class="row-sub">Restore site-specific application state (playback timestamps, search filters, editor views).</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="opt-adapters-enabled" /><span></span></label>
+          </div>
+
+          <hr />
+
+          <div style="margin-bottom: 12px; font-weight: 600; font-size: 13px; color: var(--text);">Configured Site Adapters</div>
+          <div class="grid-toggles" id="adapters-list"></div>
+        </div>
+      </section>
+
       <!-- SESSIONS -->
       <section class="panel" id="sessions-panel">
         <header class="panel-hd">
@@ -459,8 +727,13 @@
 
         <div class="card">
           <div class="rules-hd">
-            <h2>Save current window</h2>
-            <button class="btn primary-btn" id="save-session">Snapshot now</button>
+            <h2>Saved Sessions</h2>
+            <div class="tab-section-controls">
+              <button class="btn primary-btn" id="save-session">Snapshot now</button>
+              <button class="btn btn-subtle" id="export-all-sessions" title="Export all sessions to a JSON backup file">Export All</button>
+              <button class="btn btn-subtle" id="import-session-btn" title="Import saved session from JSON">Import Session</button>
+              <input type="file" id="import-session-file" accept=".json,application/json" style="display:none;" />
+            </div>
           </div>
           <ul class="session-list" id="session-list"></ul>
         </div>
@@ -470,7 +743,7 @@
       <section class="panel" id="stats-panel">
         <header class="panel-hd">
           <h1>Statistics</h1>
-          <p>What TabZen has done since installation.</p>
+          <p>What TabVault has done since installation.</p>
         </header>
 
         <div class="card stats-grid">
@@ -560,7 +833,7 @@
 
         <div class="card about">
           <h2>About</h2>
-          <p>TabZen runs entirely on your machine. No telemetry, no analytics, no remote config.
+          <p>TabVault runs entirely on your machine. No telemetry, no analytics, no remote config.
             Storage uses <code>chrome.storage.local</code>; tab activity tracking lives only in
             this browser session.</p>
           <p class="muted">Version 1.0.0</p>
@@ -607,6 +880,69 @@
 
   <!-- Autocomplete source for tab-group rules; populated at runtime -->
   <datalist id="group-titles"></datalist>
+
+  <!-- Snapshot Viewer Modal -->
+  <div id="snapshot-modal" class="dash-modal-overlay" hidden>
+    <div class="dash-modal" role="dialog" aria-modal="true" aria-labelledby="snap-modal-title">
+      <div class="dash-modal-header">
+        <div class="dash-modal-title-group">
+          <img id="snap-modal-fav" class="dash-modal-fav" alt="" />
+          <div>
+            <h3 id="snap-modal-title" class="dash-modal-title">Snapshot Preview</h3>
+            <div id="snap-modal-url" class="dash-modal-url"></div>
+          </div>
+        </div>
+        <button type="button" id="snap-modal-close" class="dash-modal-close" title="Close preview (Esc)">✕</button>
+      </div>
+      <div class="dash-modal-body">
+        <div class="dash-modal-grid">
+          <!-- Screenshot Preview Column -->
+          <div class="dash-modal-col-preview">
+            <div class="dash-preview-wrap">
+              <img id="snap-modal-img" class="dash-preview-img" alt="Tab preview" hidden />
+              <div id="snap-modal-fallback" class="dash-preview-fallback" hidden>
+                <div class="dash-fallback-icon">📄</div>
+                <div id="snap-modal-fallback-text" class="dash-fallback-text">No screenshot preview available</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Metadata & State Details Column -->
+          <div class="dash-modal-col-details">
+            <div class="dash-detail-row">
+              <span class="dash-detail-lbl">Captured</span>
+              <span id="snap-modal-time" class="dash-detail-val">—</span>
+            </div>
+            <div class="dash-detail-row">
+              <span class="dash-detail-lbl">Suspension Reason</span>
+              <span id="snap-modal-reason" class="dash-badge dash-badge-reason">—</span>
+            </div>
+            <div class="dash-detail-row">
+              <span class="dash-detail-lbl">Scroll Position</span>
+              <span id="snap-modal-scroll" class="dash-detail-val">Top of page</span>
+            </div>
+            <div class="dash-detail-row">
+              <span class="dash-detail-lbl">Saved Forms</span>
+              <span id="snap-modal-forms" class="dash-detail-val">0 fields</span>
+            </div>
+            <div class="dash-detail-row" id="snap-modal-adapter-row" hidden>
+              <span class="dash-detail-lbl">Site Adapter</span>
+              <span id="snap-modal-adapter" class="dash-detail-val">—</span>
+            </div>
+            <div class="dash-detail-row">
+              <span class="dash-detail-lbl">Snapshot ID</span>
+              <span id="snap-modal-id" class="dash-detail-val dash-mono-text">—</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="dash-modal-footer">
+        <button type="button" id="snap-modal-delete-btn" class="dash-btn dash-btn-delete-snap" title="Delete this tab snapshot permanently">Delete Snapshot</button>
+        <button type="button" id="snap-modal-restore-btn" class="dash-btn dash-btn-restore" hidden>Restore This Tab</button>
+        <button type="button" id="snap-modal-done-btn" class="dash-btn">Done</button>
+      </div>
+    </div>
+  </div>
 
   <script src="options.js"></script>
 </body>

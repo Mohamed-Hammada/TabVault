@@ -3,17 +3,17 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>TabZen</title>
+  <title>TabVault</title>
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
   <header class="hd">
     <div class="brand">
       <span class="dot"></span>
-      <span class="brand-name">TabZen</span>
+      <span class="brand-name">TabVault</span>
     </div>
     <div class="hd-actions">
-      <a id="open-github" class="gh-btn" href="https://github.com/mthcht/tabzen" target="_blank" rel="noopener noreferrer" title="View source on GitHub" aria-label="View source on GitHub">
+      <a id="open-github" class="gh-btn" href="https://github.com/Mohamed-Hammada/TabVault" target="_blank" rel="noopener noreferrer" title="View source on GitHub" aria-label="View source on GitHub">
         <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="currentColor">
           <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
         </svg>
@@ -96,6 +96,30 @@
       <span class="bulk-main">Suspend all <span id="bulk-count">0</span></span>
       <span id="bulk-est" class="bulk-est">~0 MB</span>
     </button>
+  </section>
+
+  <section class="queue-card" id="queue-card" hidden>
+    <div class="queue-hd">
+      <div class="queue-title">
+        <span class="queue-pulse"></span>
+        <span class="queue-heading" id="queue-heading">Restoring Tabs</span>
+      </div>
+      <span class="queue-badge" id="queue-badge">0 queued</span>
+    </div>
+    <div class="queue-body">
+      <div class="queue-progress-bar">
+        <div class="queue-progress-fill" id="queue-progress-fill" style="width: 0%;"></div>
+      </div>
+      <div class="queue-details" id="queue-details">
+        <span id="queue-active-count">0 active</span> · <span id="queue-queued-count">0 in queue</span>
+        <span id="queue-failed-wrap" hidden> · <span id="queue-failed-count" class="queue-failed-text">0 failed</span></span>
+      </div>
+    </div>
+    <div class="queue-actions" id="queue-actions">
+      <button id="retry-failed-btn" class="queue-btn queue-btn-retry" type="button" hidden>Retry failed</button>
+      <button id="cancel-low-priority-btn" class="queue-btn" type="button">Cancel low-priority</button>
+      <button id="clear-queue-btn" class="queue-btn" type="button">Clear queue</button>
+    </div>
   </section>
 
   <section class="stats">

@@ -14,7 +14,7 @@
         <img id="favicon" alt="" width="40" height="40" />
       </div>
       <div class="meta">
-        <div class="eyebrow">SUSPENDED · TABZEN</div>
+        <div class="eyebrow">SUSPENDED · TABVAULT</div>
         <h1 id="title">Untitled tab</h1>
         <a id="url" class="url" href="#" rel="noopener"></a>
         <div class="snooze-badge" id="snooze-badge" hidden>
@@ -27,14 +27,55 @@
       </div>
     </div>
 
+    <div class="preview-wrap" id="preview-wrap">
+      <img id="screenshot" class="screenshot" alt="Tab preview" hidden />
+      <div id="preview-fallback" class="preview-fallback" hidden>
+        <div class="fallback-icon">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+            <line x1="8" y1="21" x2="16" y2="21"/>
+            <line x1="12" y1="17" x2="12" y2="21"/>
+          </svg>
+        </div>
+        <div class="fallback-meta">
+          <span class="fallback-domain" id="fallback-domain"></span>
+          <span class="fallback-reason" id="fallback-reason">Tab preview unavailable</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="status-row" id="status-row">
+      <div class="status-chip" id="reason-chip">
+        <span class="chip-label">Reason:</span>
+        <span class="chip-value" id="suspension-reason">Idle timeout</span>
+      </div>
+      <div class="status-chip" id="status-chip">
+        <span class="chip-label">Status:</span>
+        <span class="chip-value" id="restoration-status">Suspended</span>
+      </div>
+      <div class="status-chip status-chip-queue" id="queue-chip" hidden>
+        <span class="chip-label">Queue:</span>
+        <span class="chip-value" id="queue-status">Position 1 of 1</span>
+      </div>
+    </div>
+
+    <div class="progress-bar-wrap" id="progress-bar-wrap" hidden>
+      <div class="progress-bar" id="progress-bar" style="width: 0%;"></div>
+    </div>
+
     <div class="separator"></div>
 
     <div class="footer">
       <div class="lastvisit" id="lastvisit"></div>
-      <button id="restore" class="restore" type="button">
-        <span class="kbd">↵</span>
-        <span>Restore tab</span>
-      </button>
+      <div class="footer-actions">
+        <button id="cancel-restore" class="cancel-restore" type="button" hidden>
+          <span>Cancel</span>
+        </button>
+        <button id="restore" class="restore" type="button">
+          <span class="kbd">↵</span>
+          <span>Restore tab</span>
+        </button>
+      </div>
     </div>
 
     <p class="hint" id="hint">Press any key or click anywhere to restore.</p>
@@ -43,7 +84,7 @@
 
   <div class="brand" aria-hidden="true">
     <svg viewBox="0 0 24 24" width="14" height="14"><circle cx="12" cy="12" r="5" fill="currentColor"/></svg>
-    <span>TabZen</span>
+    <span>TabVault</span>
   </div>
 
   <script src="suspended.js"></script>

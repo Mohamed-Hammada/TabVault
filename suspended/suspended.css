@@ -1,4 +1,4 @@
-/* TabZen suspended page — calm, instrument-panel feel */
+/* TabVault suspended page — calm, instrument-panel feel */
 @import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Geist:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
 
 :root {
@@ -180,6 +180,161 @@ h1 {
 }
 .snooze-badge[hidden] { display: none; }
 
+.preview-wrap {
+  margin-top: 20px;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-2);
+  max-height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.screenshot {
+  width: 100%;
+  height: 240px;
+  object-fit: cover;
+  object-position: top center;
+  display: block;
+  border-radius: 13px;
+  transition: opacity 0.24s ease;
+}
+
+.screenshot[hidden] {
+  display: none;
+}
+
+.preview-fallback {
+  width: 100%;
+  padding: 24px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 10px;
+  background: var(--surface-2);
+}
+
+.preview-fallback[hidden] {
+  display: none;
+}
+
+.fallback-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+}
+
+.fallback-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fallback-domain {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.fallback-reason {
+  font-family: var(--sans);
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.status-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.chip-label {
+  color: var(--text-faint);
+}
+
+.chip-value {
+  color: var(--text-dim);
+  font-weight: 500;
+}
+
+.status-badge-restoring {
+  color: var(--accent);
+  animation: pulse 1.2s infinite ease-in-out;
+}
+
+.status-badge-queued {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.status-badge-failed {
+  color: #e06c75;
+}
+
+.status-badge-restored {
+  color: #98c379;
+}
+
+.status-chip-queue {
+  border-color: rgba(232, 149, 107, 0.45);
+  background: rgba(232, 149, 107, 0.08);
+}
+
+.status-chip-queue .chip-value {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.progress-bar-wrap {
+  width: 100%;
+  height: 3px;
+  background: var(--surface-2);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 14px;
+}
+
+.progress-bar-wrap[hidden] {
+  display: none;
+}
+
+.progress-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
 .separator {
   height: 1px;
   background: linear-gradient(to right, transparent, var(--line-strong), transparent);
@@ -192,6 +347,39 @@ h1 {
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
+}
+
+.footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cancel-restore {
+  appearance: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border: 1px solid var(--line-strong);
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-family: var(--sans);
+  font-weight: 500;
+  font-size: 13px;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.cancel-restore:hover {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+.cancel-restore[hidden] {
+  display: none;
 }
 
 .lastvisit {
@@ -227,6 +415,12 @@ h1 {
 
 .restore:hover { filter: brightness(1.05); transform: translateY(-1px); }
 .restore:active { transform: translateY(0); filter: brightness(0.96); }
+
+.restore.restore-btn-retry {
+  background: #e06c75;
+  color: #1b1814;
+  box-shadow: 0 6px 20px -8px #e06c75, inset 0 1px 0 rgba(255,255,255,0.2);
+}
 
 .restore .kbd {
   font-family: var(--mono);

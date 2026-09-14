@@ -549,6 +549,135 @@ button { font-family: inherit; }
   background: var(--accent-soft);
 }
 
+/* ─── Queue Status Card ──────────────────────────────── */
+.queue-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid rgba(232, 149, 107, 0.35);
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.queue-card[hidden] {
+  display: none !important;
+}
+
+.queue-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.queue-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.queue-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  animation: pulse 1.2s infinite ease-in-out;
+}
+
+.queue-heading {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.queue-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid rgba(232, 149, 107, 0.3);
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+
+.queue-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.queue-progress-bar {
+  width: 100%;
+  height: 4px;
+  background: var(--surface-2);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.queue-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.queue-details {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.queue-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.queue-btn {
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  color: var(--text-dim);
+  font-family: var(--sans);
+  font-size: 10.5px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  transition: border-color .15s, color .15s, background .15s;
+}
+
+.queue-btn:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+  background: var(--surface-2);
+}
+
+.queue-btn:active {
+  transform: scale(0.97);
+}
+
+.queue-failed-text {
+  color: #e06c75;
+  font-weight: 600;
+}
+
+.queue-btn-retry {
+  color: #e06c75;
+  border-color: rgba(224, 108, 117, 0.4);
+  background: rgba(224, 108, 117, 0.08);
+}
+
+.queue-btn-retry:hover {
+  color: #ff7b86;
+  border-color: #e06c75;
+  background: rgba(224, 108, 117, 0.16);
+}
+
 /* ─── Stats — compact strip ──────────────────────────── */
 .stats {
   display: grid;

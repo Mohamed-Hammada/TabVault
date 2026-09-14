@@ -1,0 +1,11 @@
+{
+  "name": "tabvault",
+  "version": "1.0.0",
+  "description": "A privacy-first, intelligent tab suspension and restoration system.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "author": "Mohamed-Hammada",
+  "license": "MIT"
+}

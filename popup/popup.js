@@ -1,4 +1,4 @@
-// TabZen popup — redesigned for casual-friendly tab triage.
+// TabVault popup — redesigned for casual-friendly tab triage.
 const $ = (id) => document.getElementById(id);
 
 const SUSPENDED_PREFIX = chrome.runtime.getURL("suspended/");
@@ -24,7 +24,7 @@ function hostOf(url) {
 }
 
 function unsuspendInfo(url) {
-  // Pull original URL/title/favicon out of a TabZen suspended page.
+  // Pull original URL/title/favicon out of a TabVault suspended page.
   if (!isSuspendedUrl(url)) return null;
   const params = new URLSearchParams((url.split("#")[1] || ""));
   return {
@@ -136,7 +136,7 @@ function buildIdleRow(tab, idleMs, settings) {
   suspend.addEventListener("click", async (e) => {
     e.stopPropagation();
     suspend.disabled = true;
-    await send({ type: "suspend-tab", tabId: tab.id });
+    await send({ type: "suspend-tab", tabId: tab.id, reason: "manual" });
     node.style.transition = "opacity .18s, transform .18s";
     node.style.opacity = "0";
     node.style.transform = "translateX(8px)";
@@ -208,7 +208,7 @@ async function loadIdleList(currentTabId, currentWindowId) {
   $("bulk-suspend").onclick = async () => {
     $("bulk-suspend").disabled = true;
     const ids = candidates.map(c => c.tab.id);
-    for (const id of ids) await send({ type: "suspend-tab", tabId: id });
+    for (const id of ids) await send({ type: "suspend-tab", tabId: id, reason: "manual" });
     toast(`Suspended ${ids.length} tab${ids.length === 1 ? "" : "s"}`);
     list.innerHTML = "";
     $("idle-count").textContent = "0";
@@ -407,9 +407,9 @@ async function init() {
   primary.addEventListener("click", async () => {
     const action = primary.dataset.action;
     if (action === "restore") {
-      await send({ type: "restore-tab", tabId: tab.id });
+      await send({ type: "restore-tab", tabId: tab.id, options: { source: "user", userInitiated: true, priority: 100 } });
     } else {
-      const payload = { type: "suspend-tab", tabId: tab.id };
+      const payload = { type: "suspend-tab", tabId: tab.id, reason: "manual" };
       if (armedSnooze) payload.wakeAt = armedSnooze.wakeAt;
       await send(payload);
     }
@@ -425,7 +425,7 @@ async function init() {
 
   // Footer
   $("act-restore-all").addEventListener("click", async () => {
-    await send({ type: "restore-all" });
+    await send({ type: "restore-all", options: { source: "batch", priority: 10 } });
     toast("Restored all suspended tabs");
     setTimeout(() => window.close(), 700);
   });
@@ -435,7 +435,7 @@ async function init() {
   });
   $("open-github").addEventListener("click", (e) => {
     e.preventDefault();
-    chrome.tabs.create({ url: "https://github.com/mthcht/tabzen" });
+    chrome.tabs.create({ url: "https://github.com/Mohamed-Hammada/TabVault" });
     window.close();
   });
 
@@ -443,6 +443,146 @@ async function init() {
   loadIdleList(tab.id, tab.windowId);
   loadOthersInWindowAction(tab.id, tab.windowId);
   loadOtherWindowsAction(tab.windowId);
+  loadRestoreQueueStatus();
+  setInterval(loadRestoreQueueStatus, 1500);
+}
+
+async function loadRestoreQueueStatus() {
+  const card = $("queue-card");
+  if (!card) return;
+
+  try {
+    const [queueResp, allStatusesResp, maxResp, failedResp] = await Promise.all([
+      send({ type: "get-restore-queue" }),
+      send({ type: "get-all-restoration-statuses" }),
+      send({ type: "get-max-concurrent-restorations" }),
+      send({ type: "get-failed-restorations" })
+    ]);
+
+    const queueItems = queueResp?.data || [];
+    const allStatuses = allStatusesResp?.data || [];
+    const maxConcurrent = maxResp?.max || 3;
+    const failedItems = failedResp?.data || [];
+    const failedCount = failedResp?.count ?? failedItems.length;
+
+    const inFlight = allStatuses.filter(s => s.stage && s.stage !== "idle" && s.stage !== "completed" && s.stage !== "failed" && s.stage !== "cancelled" && !s.isQueued && !s.isDeferred);
+    const queued = queueItems;
+    const deferred = allStatuses.filter(s => s.isDeferred);
+
+    const activeCount = inFlight.length;
+    const queuedCount = queued.length;
+    const deferredCount = deferred.length;
+
+    if (activeCount === 0 && queuedCount === 0 && deferredCount === 0 && failedCount === 0) {
+      card.hidden = true;
+      return;
+    }
+
+    card.hidden = false;
+
+    // Header badge
+    const badge = $("queue-badge");
+    if (badge) {
+      if (failedCount > 0 && activeCount === 0 && queuedCount === 0) {
+        badge.textContent = `${failedCount} failed`;
+      } else {
+        badge.textContent = queuedCount > 0 ? `${queuedCount} queued` : `${activeCount} restoring`;
+      }
+    }
+
+    // Details summary
+    const heading = $("queue-heading");
+    if (heading) {
+      if (failedCount > 0 && activeCount === 0 && queuedCount === 0) {
+        heading.textContent = "Restoration Issues";
+      } else if (activeCount > 0 && queuedCount > 0) {
+        heading.textContent = "Restoring & Queued";
+      } else if (activeCount > 0) {
+        heading.textContent = "Restoring Tabs";
+      } else if (queuedCount > 0) {
+        heading.textContent = "Restoration Queued";
+      } else {
+        heading.textContent = "Deferred Restores";
+      }
+    }
+
+    const details = $("queue-details");
+    if (details) {
+      const parts = [];
+      if (activeCount > 0) parts.push(`${activeCount} active`);
+      if (queuedCount > 0) parts.push(`${queuedCount} in queue`);
+      if (deferredCount > 0) parts.push(`${deferredCount} deferred`);
+      if (failedCount > 0) parts.push(`${failedCount} failed`);
+      parts.push(`${maxConcurrent} concurrency limit`);
+      details.textContent = parts.join(" · ");
+    }
+
+    // Failed wrap and count
+    const failedWrap = $("queue-failed-wrap");
+    const failedCountEl = $("queue-failed-count");
+    if (failedWrap && failedCountEl) {
+      if (failedCount > 0) {
+        failedWrap.hidden = false;
+        failedCountEl.textContent = `${failedCount} failed`;
+      } else {
+        failedWrap.hidden = true;
+      }
+    }
+
+    // Retry failed button
+    const retryFailedBtn = $("retry-failed-btn");
+    if (retryFailedBtn) {
+      if (failedCount > 0) {
+        retryFailedBtn.hidden = false;
+        retryFailedBtn.onclick = async () => {
+          retryFailedBtn.disabled = true;
+          const res = await send({ type: "retry-all-failed" });
+          toast(`Retried ${res?.data?.retried || failedCount} failed tab${failedCount === 1 ? "" : "s"}`);
+          await loadRestoreQueueStatus();
+          retryFailedBtn.disabled = false;
+        };
+      } else {
+        retryFailedBtn.hidden = true;
+      }
+    }
+
+    // Progress bar
+    const fill = $("queue-progress-fill");
+    if (fill) {
+      const total = activeCount + queuedCount;
+      if (total > 0) {
+        const avgProgress = inFlight.reduce((acc, s) => acc + (s.progress || 20), 0) / (total);
+        fill.style.width = `${Math.min(100, Math.max(5, Math.round(avgProgress)))}%`;
+      } else {
+        fill.style.width = "0%";
+      }
+    }
+
+    // Actions
+    const cancelLowBtn = $("cancel-low-priority-btn");
+    if (cancelLowBtn) {
+      cancelLowBtn.onclick = async () => {
+        cancelLowBtn.disabled = true;
+        const res = await send({ type: "cancel-low-priority" });
+        toast(`Cancelled ${res?.data?.queuedCancelled || 0} low-priority restores`);
+        await loadRestoreQueueStatus();
+        cancelLowBtn.disabled = false;
+      };
+    }
+
+    const clearQueueBtn = $("clear-queue-btn");
+    if (clearQueueBtn) {
+      clearQueueBtn.onclick = async () => {
+        clearQueueBtn.disabled = true;
+        const res = await send({ type: "clear-restore-queue", reason: "Cleared by user from popup" });
+        toast(`Cleared ${res?.count || 0} queued tabs`);
+        await loadRestoreQueueStatus();
+        clearQueueBtn.disabled = false;
+      };
+    }
+  } catch (_) {
+    card.hidden = true;
+  }
 }
 
 async function loadOthersInWindowAction(currentTabId, currentWindowId) {

@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "TabZen — Advanced Tab Suspender",
-  "short_name": "TabZen",
+  "name": "TabVault — Smart Tab Suspension & Restoration",
+  "short_name": "TabVault",
   "version": "1.0.0",
-  "description": "Suspend idle tabs to free RAM. Per-domain timers, regex rules, snooze, smart learning, tab triage popup. All local.",
+  "description": "Intelligent tab suspension and restoration system. Save RAM, preserve scroll/form state, snapshot previews, and smart restore.",
   "minimum_chrome_version": "116",
 
   "permissions": [
@@ -21,12 +21,13 @@
   ],
 
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
 
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "TabZen",
+    "default_title": "TabVault",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
@@ -84,7 +85,7 @@
       "description": "Add current domain to whitelist"
     },
     "open-options": {
-      "description": "Open TabZen settings"
+      "description": "Open TabVault settings"
     }
   }
 }

@@ -6,42 +6,190 @@
 
   let dirty = false;
   let lastReported = null;
+  let lastReportedDetails = null;
 
-  function report(state) {
-    if (state === lastReported) return;
-    lastReported = state;
+  // Track elements that the user has actively typed into or modified
+  const userModifiedElements = new WeakSet();
+
+  // Excluded input types that do NOT represent unsaved user draft/form data:
+  // - checkbox/radio/button/submit/reset: standard page controls or actions
+  // - hidden: not user visible or editable
+  // - range/color: sliders/color pickers in WebGL/configurators/SPAs (always have default values like 50, #000000)
+  // - search: search bars/queries do not represent unsaved drafts that should prevent tab suspension
+  // - file/image: file selectors/image buttons
+  const EXCLUDED_INPUT_TYPES = new Set([
+    "checkbox", "radio", "submit", "button", "reset", "hidden",
+    "range", "color", "search", "image", "file"
+  ]);
+
+  function getElementSelector(el) {
+    if (!el || typeof el !== "object") return "unknown";
     try {
-      chrome.runtime.sendMessage({ type: "report-form-input", hasFormInput: state });
-    } catch (_) { /* extension might be reloading */ }
+      if (el.id) return `#${typeof CSS !== "undefined" && CSS.escape ? CSS.escape(el.id) : el.id}`;
+      if (el.name) {
+        const tag = (el.tagName || "").toLowerCase();
+        return `${tag}[name="${typeof CSS !== "undefined" && CSS.escape ? CSS.escape(el.name) : el.name}"]`;
+      }
+      if (el.className && typeof el.className === "string") {
+        const firstClass = el.className.trim().split(/\s+/)[0];
+        if (firstClass) {
+          const tag = (el.tagName || "").toLowerCase();
+          return `${tag}.${typeof CSS !== "undefined" && CSS.escape ? CSS.escape(firstClass) : firstClass}`;
+        }
+      }
+      const tag = (el.tagName || "element").toLowerCase();
+      if (el.type) return `${tag}[type="${el.type}"]`;
+      return tag;
+    } catch (_) {
+      return (el.tagName || "element").toLowerCase();
+    }
   }
 
-  function isMeaningfulInput(el) {
-    if (!el) return false;
-    const tag = el.tagName;
+  function isUserEditable(el) {
+    if (!el || el.isConnected === false) return false;
+    if (el.disabled) return false;
+    if (el.readOnly) return false;
+
+    try {
+      if (el.hidden) return false;
+      if (typeof el.getAttribute === "function" && el.getAttribute("aria-hidden") === "true") return false;
+
+      if (el.style) {
+        if (el.style.display === "none" || el.style.visibility === "hidden" || el.style.opacity === "0") {
+          return false;
+        }
+      }
+
+      if (typeof window.getComputedStyle === "function") {
+        const style = window.getComputedStyle(el);
+        if (style) {
+          if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+            return false;
+          }
+          if (el.offsetParent === null && style.position !== "fixed") {
+            return false;
+          }
+        }
+      } else if (el.offsetParent === null && el.style?.position !== "fixed") {
+        return false;
+      }
+    } catch (_) { /* fallback */ }
+
+    return true;
+  }
+
+  function evaluateElement(el) {
+    if (!el) return null;
+    const tag = (el.tagName || "").toUpperCase();
+    const isContentEditable = Boolean(el.isContentEditable || el.contentEditable === true || el.contentEditable === "true");
+
+    const userInteracted = userModifiedElements.has(el);
+
     if (tag === "INPUT") {
-      const type = (el.type || "").toLowerCase();
-      // Ignore search/checkboxes/radios — they don't represent unsaved data we'd lose
-      if (["checkbox", "radio", "submit", "button", "reset", "hidden"].includes(type)) return false;
-      return (el.value || "").length > 0;
+      const type = (el.type || "text").toLowerCase();
+      if (EXCLUDED_INPUT_TYPES.has(type)) return null;
+      if (!isUserEditable(el)) return null;
+
+      const val = (el.value || "").trim();
+      const hasValue = val.length > 0;
+      const valueChanged = el.defaultValue !== undefined ? el.value !== el.defaultValue : userInteracted;
+
+      const isDirty = hasValue && valueChanged && userInteracted;
+
+      return {
+        isDirty,
+        elementType: "input",
+        inputType: type,
+        selector: getElementSelector(el),
+        hasValue,
+        valueChanged,
+        isUserEditable: true,
+        userInteracted
+      };
     }
-    if (tag === "TEXTAREA") return (el.value || "").length > 0;
-    if (el.isContentEditable) return (el.innerText || "").trim().length > 0;
-    return false;
+
+    if (tag === "TEXTAREA") {
+      if (!isUserEditable(el)) return null;
+      const val = (el.value || "").trim();
+      const hasValue = val.length > 0;
+      const valueChanged = el.defaultValue !== undefined ? el.value !== el.defaultValue : userInteracted;
+
+      const isDirty = hasValue && valueChanged && userInteracted;
+
+      return {
+        isDirty,
+        elementType: "textarea",
+        inputType: null,
+        selector: getElementSelector(el),
+        hasValue,
+        valueChanged,
+        isUserEditable: true,
+        userInteracted
+      };
+    }
+
+    if (isContentEditable) {
+      if (!isUserEditable(el)) return null;
+      const val = (el.innerText || el.textContent || "").trim();
+      const hasValue = val.length > 0;
+      const isDirty = hasValue && userInteracted;
+
+      return {
+        isDirty,
+        elementType: "contenteditable",
+        inputType: null,
+        selector: getElementSelector(el),
+        hasValue,
+        valueChanged: userInteracted,
+        isUserEditable: true,
+        userInteracted
+      };
+    }
+
+    return null;
   }
 
   function checkDirty() {
     const fields = document.querySelectorAll("input, textarea, [contenteditable=''], [contenteditable='true']");
     for (const f of fields) {
-      if (isMeaningfulInput(f)) return true;
+      const evaluation = evaluateElement(f);
+      if (evaluation && evaluation.isDirty) {
+        return { isDirty: true, details: evaluation };
+      }
     }
-    return false;
+    return { isDirty: false, details: null };
+  }
+
+  function report(state, details = null) {
+    if (state === lastReported && (!state || JSON.stringify(details) === JSON.stringify(lastReportedDetails))) return;
+    lastReported = state;
+    lastReportedDetails = details;
+
+    if (state && details) {
+      console.log(
+        `[TabVault] form-input detected:\n` +
+        `  elementType=${details.elementType}\n` +
+        `  selector=${details.selector}\n` +
+        `  hasValue=${details.hasValue}\n` +
+        `  valueChanged=${details.valueChanged}\n` +
+        `  isUserEditable=${details.isUserEditable}`
+      );
+    }
+
+    try {
+      chrome.runtime.sendMessage({
+        type: "report-form-input",
+        hasFormInput: state,
+        details
+      });
+    } catch (_) { /* extension might be reloading */ }
   }
 
   function onChange() {
     const next = checkDirty();
-    if (next !== dirty) {
-      dirty = next;
-      report(dirty);
+    if (next.isDirty !== dirty) {
+      dirty = next.isDirty;
+      report(dirty, next.details);
     }
   }
 
@@ -56,15 +204,45 @@
     });
   }
 
-  document.addEventListener("input", schedule, true);
-  document.addEventListener("change", schedule, true);
-
-  // Submitting a form clears the dirty state.
-  document.addEventListener("submit", () => {
-    setTimeout(() => { dirty = false; report(false); }, 0);
+  // Only genuine, browser-generated events (isTrusted === true) count as user
+  // interaction. A page's own JavaScript routinely dispatches synthetic
+  // input/change events (el.dispatchEvent(new Event("input"))) to sync its own
+  // reactive state when it sets a field's value programmatically — SPA/WebGL
+  // configurators like 3DTuning do this constantly on load and on every UI
+  // interaction that isn't literal typing. Without this check, that synthetic
+  // event alone marks the field "user-modified," and since the framework also
+  // sets .value away from defaultValue, the field would look identical to a
+  // real unsaved edit — permanently blocking suspension of a tab no one is
+  // actually mid-edit on.
+  document.addEventListener("input", (e) => {
+    if (e.target && e.target.nodeType === 1 && e.isTrusted) {
+      userModifiedElements.add(e.target);
+    }
+    schedule();
   }, true);
 
-  // Initial check after first paint
+  document.addEventListener("change", (e) => {
+    if (e.target && e.target.nodeType === 1 && e.isTrusted) {
+      userModifiedElements.add(e.target);
+    }
+    schedule();
+  }, true);
+
+  // Submitting or resetting a form clears dirty state
+  document.addEventListener("submit", () => {
+    setTimeout(() => {
+      dirty = false;
+      report(false, null);
+    }, 0);
+  }, true);
+
+  document.addEventListener("reset", () => {
+    setTimeout(() => {
+      onChange();
+    }, 0);
+  }, true);
+
+  // Initial check after first paint — runs cleanly with no false positives
   if (document.readyState === "complete" || document.readyState === "interactive") {
     schedule();
   } else {
@@ -140,7 +318,7 @@
         scroll,
         spaRoute: currentSpaRoute,
         spaRoutes: spaRouteScrolls,
-        hasFormInput: checkDirty()
+        hasFormInput: checkDirty().isDirty
       });
       return true;
     }

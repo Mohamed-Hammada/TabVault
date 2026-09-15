@@ -553,7 +553,13 @@ async function shouldSuspend(tab, settings) {
     if (ns.audible && tab.audible) return { suspend: false, reason: "audible" };
 
     const state = tabState.get(tab.id);
-    if (ns.hasFormInput && state?.hasFormInput) return { suspend: false, reason: "form-input" };
+    if (ns.hasFormInput && state?.hasFormInput) {
+      return {
+        suspend: false,
+        reason: "form-input",
+        formInputDetails: state?.formInputDetails || null
+      };
+    }
 
     if (ns.offline && !navigator.onLine) return { suspend: false, reason: "offline" };
 
@@ -1175,7 +1181,10 @@ async function runSweep() {
       const ok = await suspendTab(tab.id);
       if (ok) suspendedCount++;
     } else {
-      tvLog(`sweep-skip tabId=${tab.id} reason=${decision.reason} idle=${decision.idleMs != null ? Math.round(decision.idleMs / 1000) + "s" : "n/a"} timeout=${decision.timeoutMs != null ? Math.round(decision.timeoutMs / 1000) + "s" : "n/a"}`);
+      const formInputDetails = decision.reason === "form-input" && state?.formInputDetails
+        ? ` [form-input: elementType=${state.formInputDetails.elementType} selector=${state.formInputDetails.selector} hasValue=${state.formInputDetails.hasValue} valueChanged=${state.formInputDetails.valueChanged} isUserEditable=${state.formInputDetails.isUserEditable}]`
+        : "";
+      tvLog(`sweep-skip tabId=${tab.id} reason=${decision.reason}${formInputDetails} idle=${decision.idleMs != null ? Math.round(decision.idleMs / 1000) + "s" : "n/a"} timeout=${decision.timeoutMs != null ? Math.round(decision.timeoutMs / 1000) + "s" : "n/a"}`);
     }
   }
 
@@ -1247,6 +1256,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   const s = tabState.get(tabId) || {};
   if (changeInfo.audible !== undefined) s.audible = changeInfo.audible;
   if (changeInfo.status === "complete") s.lastActiveAt = s.lastActiveAt || Date.now();
+  if (changeInfo.url) {
+    s.hasFormInput = false;
+    s.formInputDetails = null;
+  }
   tabState.set(tabId, s);
   scheduleActiveSessionPersistence();
 
@@ -2019,8 +2032,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             const tabId = sender.tab?.id;
             if (tabId !== undefined) {
               const s = tabState.get(tabId) || {};
+              const prevHasFormInput = s.hasFormInput;
               s.hasFormInput = !!msg.hasFormInput;
+              s.formInputDetails = msg.details || null;
               tabState.set(tabId, s);
+
+              if (msg.hasFormInput && msg.details) {
+                tvLog(
+                  `form-input detected tabId=${tabId}`,
+                  `elementType=${msg.details.elementType}`,
+                  `selector=${msg.details.selector}`,
+                  `hasValue=${msg.details.hasValue}`,
+                  `valueChanged=${msg.details.valueChanged}`,
+                  `isUserEditable=${msg.details.isUserEditable}`
+                );
+              } else if (!msg.hasFormInput && prevHasFormInput) {
+                tvLog(`form-input cleared tabId=${tabId}`);
+              }
             }
             sendResponse({ ok: true });
           }

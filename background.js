@@ -57,6 +57,12 @@ const STORAGE_KEY_RECENT_SUSPENDED = "recent_suspended";
 const STORAGE_KEY_RECENT_RESTORED = "recent_restored";
 const STORAGE_KEY_RESTORE_FAILURES = "restore_failures";
 const STORAGE_KEY_MIGRATIONS = "migrations";
+const STORAGE_KEY_PENDING_DISCARDS = "pending_discards"; // { [tabId]: { suspendedUrl, requestedAt, reason } }
+const PENDING_DISCARD_STALE_MS = 10 * 60_000; // drop an entry that never resolved after 10 minutes
+
+function tvLog(...args) {
+  console.log("[TabVault]", ...args);
+}
 
 // In-memory tab activity ledger. Rebuilt on service worker wake.
 // Map<tabId, { lastActiveAt: epoch_ms, hasFormInput: boolean, audible: boolean, isManuallyProtected: boolean }>
@@ -597,11 +603,128 @@ async function clearWake(tabId) {
   }
 }
 
+// ─── Discard-after-replace (real memory reclamation) ───────────────────────
+//
+// After navigating a tab to suspended.html we don't yet know the navigation has
+// actually committed — chrome.tabs.update() resolves on initiation, not on
+// commit. Discarding too early risks Chrome remembering the tab's *previous*
+// (pre-suspend) URL. Rather than block suspendTab() on an in-memory
+// setTimeout/Promise (which is lost if the MV3 service worker is terminated
+// mid-wait), we persist a pending-discard record and resolve it from two
+// independent, restart-safe triggers: the persistent chrome.tabs.onUpdated
+// listener (fast path, fires within the same wake cycle) and the once-a-minute
+// sweep tick / onStartup reconciliation (recovery path, survives SW restarts
+// and full browser restarts).
+
+async function getPendingDiscards() {
+  return (await chrome.storage.local.get(STORAGE_KEY_PENDING_DISCARDS))[STORAGE_KEY_PENDING_DISCARDS] || {};
+}
+async function setPendingDiscards(map) {
+  await chrome.storage.local.set({ [STORAGE_KEY_PENDING_DISCARDS]: map });
+}
+
+async function schedulePendingDiscard(tabId, suspendedUrl, reason) {
+  await withStorageKeyLock(STORAGE_KEY_PENDING_DISCARDS, async () => {
+    const map = await getPendingDiscards();
+    map[tabId] = { suspendedUrl, requestedAt: Date.now(), reason: reason || null };
+    await setPendingDiscards(map);
+  });
+}
+
+async function clearPendingDiscard(tabId) {
+  await withStorageKeyLock(STORAGE_KEY_PENDING_DISCARDS, async () => {
+    const map = await getPendingDiscards();
+    if (map[tabId]) {
+      delete map[tabId];
+      await setPendingDiscards(map);
+    }
+  });
+}
+
+// Attempts to discard a tab whose suspended-page navigation has committed.
+// Safe to call redundantly (from the onUpdated fast path AND the sweep-tick
+// recovery path) — every branch either discards-and-clears or clears without
+// discarding, so a duplicate call is always a no-op on the second pass.
+async function discardIfEligible(tabId) {
+  const map = await getPendingDiscards();
+  const entry = map[tabId];
+  if (!entry) return;
+
+  let tab;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch (_) {
+    tvLog(`suspend:discard-abandoned tabId=${tabId} reason=tab-closed`);
+    await clearPendingDiscard(tabId);
+    return;
+  }
+
+  if (tab.discarded) {
+    tvLog(`suspend:discard-abandoned tabId=${tabId} reason=already-discarded`);
+    await clearPendingDiscard(tabId);
+    return;
+  }
+
+  if (tab.url !== entry.suspendedUrl) {
+    // User restored (or the tab navigated elsewhere) before we got to discard it.
+    tvLog(`suspend:discard-abandoned tabId=${tabId} reason=url-changed`);
+    await clearPendingDiscard(tabId);
+    return;
+  }
+
+  if (tab.status !== "complete") {
+    // Navigation hasn't committed yet; leave the pending entry for the next trigger.
+    return;
+  }
+
+  if (tab.active) {
+    // The user is looking at this tab right now — never discard what's on screen.
+    tvLog(`suspend:discard-skipped tabId=${tabId} reason=tab-active`);
+    await clearPendingDiscard(tabId);
+    return;
+  }
+
+  if (Date.now() - entry.requestedAt > PENDING_DISCARD_STALE_MS) {
+    tvLog(`suspend:discard-abandoned tabId=${tabId} reason=stale`);
+    await clearPendingDiscard(tabId);
+    return;
+  }
+
+  tvLog(`suspend:committed tabId=${tabId} url=${entry.suspendedUrl}`);
+  tvLog(`suspend:discard-requested tabId=${tabId}`);
+  try {
+    await chrome.tabs.discard(tabId);
+  } catch (err) {
+    tvLog(`suspend:discard-result tabId=${tabId} discarded=false error=${err?.message || err}`);
+    await clearPendingDiscard(tabId);
+    return;
+  }
+
+  let after = null;
+  try { after = await chrome.tabs.get(tabId); } catch (_) {}
+  tvLog(`suspend:discard-result tabId=${tabId} discarded=${after?.discarded ?? "unknown"} url=${after?.url ?? "unknown"}`);
+  await clearPendingDiscard(tabId);
+}
+
+// Recovery pass: catches any pending discard whose onUpdated event fired while
+// the service worker was asleep (so the fast-path listener never ran), or that
+// was already committed before schedulePendingDiscard's listener registration
+// took effect. Cheap to run every tick — the map is normally empty.
+async function reconcilePendingDiscards() {
+  const map = await getPendingDiscards();
+  const tabIds = Object.keys(map);
+  for (const tabId of tabIds) {
+    await discardIfEligible(Number(tabId));
+  }
+}
+
 async function suspendTab(tabId, opts = {}) {
   const settings = await getSettings();
   let tab;
   try { tab = await chrome.tabs.get(tabId); } catch { return false; }
   if (!tab.url || isInternalUrl(tab.url) || isAlreadySuspended(tab.url)) return false;
+
+  tvLog(`suspend:start tabId=${tabId} reason=${opts.reason || "idle_timeout"} url=${tab.url}`);
 
   const tracker = getSnapshotOperationTracker();
   await tracker.startSnapshot(tabId, { url: tab.url, stage: "suspending" });
@@ -627,6 +750,12 @@ async function suspendTab(tabId, opts = {}) {
       try {
         await chrome.tabs.update(tabId, { url: suspendedUrl });
       } catch (e) { return false; }
+      tvLog(`suspend:navigated tabId=${tabId} url=${suspendedUrl}`);
+
+      // Real memory reclamation: once this navigation commits, discard the
+      // renderer entirely. Scheduled rather than awaited here — see the
+      // "Discard-after-replace" section above for why.
+      await schedulePendingDiscard(tabId, suspendedUrl, opts.reason || "idle_timeout");
     }
 
     // Schedule the wake alarm AFTER the suspend lands, so the right tab id is associated.
@@ -687,8 +816,11 @@ async function suspendTab(tabId, opts = {}) {
 
 async function restoreTab(tabId, options = {}) {
   let tab;
-  try { tab = await chrome.tabs.get(tabId); } catch { await clearWake(tabId); return false; }
+  try { tab = await chrome.tabs.get(tabId); } catch { await clearWake(tabId); await clearPendingDiscard(tabId); return false; }
   if (!tab?.url) return false;
+
+  // A restore in progress must never be discarded out from under it.
+  await clearPendingDiscard(tabId);
 
   // Prevent duplicate restoration if the tab is already active and not suspended or discarded
   if (!isAlreadySuspended(tab.url) && !tab.discarded && !options.force) {
@@ -696,8 +828,11 @@ async function restoreTab(tabId, options = {}) {
     return true;
   }
 
+  tvLog(`restore:start tabId=${tabId} source=${options.source || "unknown"} discarded=${Boolean(tab.discarded)}`);
+
   const restoreTracker = getRestorationOperationTracker();
   await restoreTracker.startRestoration(tabId, { url: tab.url, source: options.source, priority: options.priority });
+  const restoreStartedAt = Date.now();
 
   try {
     const settings = await getSettings();
@@ -724,6 +859,7 @@ async function restoreTab(tabId, options = {}) {
 
     if (res?.ok) {
       await clearWake(tabId);
+      tvLog(`restore:complete tabId=${tabId} durationMs=${Date.now() - restoreStartedAt}`);
       const stats = await getStats();
       await setStats({ totalRestorations: stats.totalRestorations + 1 });
 
@@ -872,6 +1008,7 @@ chrome.runtime.onStartup.addListener(async () => {
   buildContextMenus();
   refreshFocusedWindowId();
   await runOneTimeMigrations();
+  try { await reconcilePendingDiscards(); } catch (_) {}
 
   // Run the whole startup recovery pass under the crash-recovery lock so an
   // overlapping onInstalled/periodic-sweep recovery can't race on the same
@@ -963,6 +1100,14 @@ async function runSweep() {
       await suspendTab(tab.id);
     }
   }
+
+  // Recovery path for discard-after-replace: catches any pending discard whose
+  // onUpdated fast-path trigger was missed (e.g. the service worker was asleep
+  // when the suspended-page navigation committed).
+  try {
+    await reconcilePendingDiscards();
+  } catch (_) {}
+
   scheduleActiveSessionPersistence();
 }
 
@@ -974,12 +1119,19 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   recordVisit(tabId).catch(() => {});
   scheduleActiveSessionPersistence();
 
+  // The user is now looking at this tab — cancel any not-yet-executed discard
+  // immediately, rather than waiting for discardIfEligible's own active-check.
+  await clearPendingDiscard(tabId);
+
   const engine = getRestorationEngine();
   // If tab had its restoration deferred because it was in the background, restore it now that user focused it!
   if (engine.isDeferred(tabId)) {
+    tvLog(`restore:start tabId=${tabId} source=user (deferred-trigger)`);
+    const deferredStartedAt = Date.now();
     const res = await engine.triggerDeferred(tabId, { source: "user", priority: RestorePriority.USER_REQUESTED });
     if (res?.ok) {
       await clearWake(tabId);
+      tvLog(`restore:complete tabId=${tabId} durationMs=${Date.now() - deferredStartedAt}`);
       const stats = await getStats();
       await setStats({ totalRestorations: stats.totalRestorations + 1 });
     }
@@ -1013,12 +1165,19 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url && !isAlreadySuspended(changeInfo.url)) {
     // nothing, already handled by restore action
   }
+
+  // Fast path for discard-after-replace: fires as soon as the suspended-page
+  // navigation commits, usually within the same wake cycle as suspendTab().
+  if (changeInfo.status === "complete") {
+    discardIfEligible(tabId).catch(() => {});
+  }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabState.delete(tabId);
   manuallyProtectedTabs.delete(tabId);
   clearWake(tabId);
+  clearPendingDiscard(tabId);
   scheduleActiveSessionPersistence();
   try {
     getRestorationEngine().cancelRestoration(tabId, "Tab closed");

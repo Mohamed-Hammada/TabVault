@@ -250,9 +250,18 @@
 
     // Auto-restore on focus (when user switches to the tab)
     if (a.autoRestoreOnFocus) {
-      document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "visible") restore();
-      }, { once: true });
+      if (document.visibilityState === "visible") {
+        // A discarded suspended tab reloads this page fresh on activation, so
+        // it can start already-visible with no hidden->visible transition to
+        // catch. The background service worker's own onActivated listener
+        // restores it independently either way; this just keeps the on-page
+        // "Restoring..." UI in sync with that.
+        restore();
+      } else {
+        document.addEventListener("visibilitychange", () => {
+          if (document.visibilityState === "visible") restore();
+        }, { once: true });
+      }
     }
   });
 

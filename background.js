@@ -56,11 +56,24 @@ const STORAGE_KEY_SESSIONS = "sessions";
 const STORAGE_KEY_RECENT_SUSPENDED = "recent_suspended";
 const STORAGE_KEY_RECENT_RESTORED = "recent_restored";
 const STORAGE_KEY_RESTORE_FAILURES = "restore_failures";
+const STORAGE_KEY_MIGRATIONS = "migrations";
 
 // In-memory tab activity ledger. Rebuilt on service worker wake.
 // Map<tabId, { lastActiveAt: epoch_ms, hasFormInput: boolean, audible: boolean, isManuallyProtected: boolean }>
 const tabState = new Map();
 const manuallyProtectedTabs = new Set();
+
+// Tracks the currently-focused browser window so "active tab" protection only
+// applies to the tab the user is actually looking at, not to one tab per
+// open window. Rebuilt on service worker wake by refreshFocusedWindowId().
+let focusedWindowId = chrome.windows.WINDOW_ID_NONE;
+
+async function refreshFocusedWindowId() {
+  try {
+    const win = await chrome.windows.getLastFocused({});
+    if (win && win.focused) focusedWindowId = win.id;
+  } catch (_) { /* ignore */ }
+}
 
 // Serializes read-modify-write cycles against a single storage key so concurrent
 // callers (e.g. Promise.all'd restoreTab calls in restoreAll) don't clobber each
@@ -187,7 +200,7 @@ const DEFAULT_SETTINGS = {
     showLastVisited: true,
     showRestoreHint: true,
     customMessage: "",
-    autoRestoreOnFocus: false,
+    autoRestoreOnFocus: true,
     confirmRestoreForLargePages: false
   },
 
@@ -254,6 +267,24 @@ async function getUsage() {
 
 async function setUsage(map) {
   await chrome.storage.local.set({ [STORAGE_KEY_USAGE]: map });
+}
+
+// One-time migrations for existing installs whose settings were already
+// persisted to storage before a DEFAULT_SETTINGS change — updating the
+// constant alone never touches what's already saved. Each migration runs
+// at most once (tracked in STORAGE_KEY_MIGRATIONS) so a user who explicitly
+// reverts the setting afterward isn't overridden again next reload.
+async function runOneTimeMigrations() {
+  const { [STORAGE_KEY_MIGRATIONS]: migrations = {} } = await chrome.storage.local.get(STORAGE_KEY_MIGRATIONS);
+  if (migrations.autoRestoreOnFocusDefaultV1) return;
+
+  const { [STORAGE_KEY_SETTINGS]: existing } = await chrome.storage.local.get(STORAGE_KEY_SETTINGS);
+  if (existing) {
+    const merged = mergeDeep(existing, { appearance: { autoRestoreOnFocus: true } });
+    await chrome.storage.local.set({ [STORAGE_KEY_SETTINGS]: merged });
+  }
+  migrations.autoRestoreOnFocusDefaultV1 = true;
+  await chrome.storage.local.set({ [STORAGE_KEY_MIGRATIONS]: migrations });
 }
 
 function mergeDeep(target, source) {
@@ -494,7 +525,14 @@ async function shouldSuspend(tab, settings) {
       return { suspend: false, reason: "in-group" };
     }
 
-    if (ns.activeInAnyWindow && tab.active) return { suspend: false, reason: "active" };
+    // Only protect the tab the user is actually looking at (active tab of the
+    // focused window). If we haven't learned the focused window yet, fall back
+    // to the old, broader behavior so we never wrongly suspend a visible tab.
+    if (ns.activeInAnyWindow && tab.active) {
+      if (focusedWindowId === chrome.windows.WINDOW_ID_NONE || tab.windowId === focusedWindowId) {
+        return { suspend: false, reason: "active" };
+      }
+    }
 
     if (ns.onlyTabInWindow) {
       const tabsInWindow = await chrome.tabs.query({ windowId: tab.windowId });
@@ -818,9 +856,11 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   if (!cur[STORAGE_KEY_STATS]) {
     await chrome.storage.local.set({ [STORAGE_KEY_STATS]: { ...DEFAULT_STATS, installedAt: Date.now() } });
   }
+  await runOneTimeMigrations();
 
   chrome.alarms.create(ALARM_TICK, { periodInMinutes: ALARM_TICK_PERIOD_MIN });
   buildContextMenus();
+  refreshFocusedWindowId();
 
   if (details.reason === "install") {
     chrome.tabs.create({ url: chrome.runtime.getURL("options/options.html?welcome=1") });
@@ -830,6 +870,8 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 chrome.runtime.onStartup.addListener(async () => {
   chrome.alarms.create(ALARM_TICK, { periodInMinutes: ALARM_TICK_PERIOD_MIN });
   buildContextMenus();
+  refreshFocusedWindowId();
+  await runOneTimeMigrations();
 
   // Run the whole startup recovery pass under the crash-recovery lock so an
   // overlapping onInstalled/periodic-sweep recovery can't race on the same
@@ -900,6 +942,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 async function runSweep() {
   const settings = await getSettings();
   if (!settings.enabled) return;
+
+  await refreshFocusedWindowId();
 
   // Guarded by the same recovery lock as onStartup: if a startup recovery pass is
   // still in flight, this tick's check is simply skipped rather than racing it.
@@ -985,6 +1029,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
   if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+  focusedWindowId = windowId;
   try {
     const [active] = await chrome.tabs.query({ active: true, windowId });
     if (active) {

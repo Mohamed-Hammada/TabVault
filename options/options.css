@@ -145,7 +145,8 @@ hr { border: 0; border-top: 1px solid var(--line-strong); margin: 18px 0; }
 /* Content */
 .content {
   padding: 56px 60px 80px;
-  max-width: 880px;
+  max-width: 1180px;
+  margin: 0 auto;
 }
 
 .welcome {
@@ -740,7 +741,16 @@ select {
 @media (max-width: 920px) {
   .layout { grid-template-columns: 1fr; }
   .nav { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--line-strong); }
-  .nav-list { flex-direction: row; flex-wrap: wrap; gap: 4px; }
+  .nav-list {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 4px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    padding-bottom: 4px;
+  }
+  .nav-item { flex: 0 0 auto; white-space: nowrap; }
   .content { padding: 32px 24px 60px; }
   .grid-toggles { grid-template-columns: 1fr; }
   .stats-grid { grid-template-columns: 1fr; }

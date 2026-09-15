@@ -42,7 +42,7 @@
     <main class="content">
       <div id="welcome" class="welcome" hidden>
         <h2>Welcome to TabVault</h2>
-        <p>You're all set with sensible defaults — tabs will auto-suspend after 30 minutes of inactivity. Browse through the sections to fine-tune. Everything is stored locally; nothing is sent anywhere.</p>
+        <p>You're all set with sensible defaults — tabs will auto-suspend after <span id="welcome-minutes">30</span> minutes of inactivity. Browse through the sections to fine-tune. Everything is stored locally; nothing is sent anywhere.</p>
       </div>
 
       <div id="recovery-banner" class="recovery-banner" hidden>
@@ -378,8 +378,8 @@
           <label class="toggle-card">
             <input type="checkbox" id="ns-active" />
             <div>
-              <div class="tt">Tab is active in any window</div>
-              <div class="ts">The visible tab in any window is left alone.</div>
+              <div class="tt">Tab is active in the focused window</div>
+              <div class="ts">Only the tab you're currently looking at is left alone — active tabs in other, unfocused windows can still be suspended.</div>
             </div>
           </label>
 

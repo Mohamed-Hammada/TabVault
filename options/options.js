@@ -77,11 +77,17 @@ async function loadCrashRecoverySummary() {
   } catch (_) { /* non-critical */ }
 }
 
+function updateWelcomeMinutes() {
+  const el = $("welcome-minutes");
+  if (el) el.textContent = SETTINGS.suspendAfterMinutes;
+}
+
 function renderAll() {
   // General
   $("opt-enabled").checked = SETTINGS.enabled;
   $("opt-minutes").value = SETTINGS.suspendAfterMinutes;
   $("opt-strategy").value = SETTINGS.strategy;
+  updateWelcomeMinutes();
 
   // Never suspend
   $("ns-pinned").checked = SETTINGS.neverSuspend.pinned;
@@ -590,7 +596,7 @@ function wire() {
 
   // General
   $("opt-enabled").addEventListener("change", () => { SETTINGS.enabled = $("opt-enabled").checked; scheduleSave(); });
-  $("opt-minutes").addEventListener("input", () => { SETTINGS.suspendAfterMinutes = clampInt($("opt-minutes").value, 1, 1440, 30); scheduleSave(); });
+  $("opt-minutes").addEventListener("input", () => { SETTINGS.suspendAfterMinutes = clampInt($("opt-minutes").value, 1, 1440, 30); updateWelcomeMinutes(); scheduleSave(); });
   $("opt-strategy").addEventListener("change", () => { SETTINGS.strategy = $("opt-strategy").value; scheduleSave(); });
 
   // Never suspend

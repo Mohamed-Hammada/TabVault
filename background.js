@@ -48,6 +48,19 @@ import {
 
 const ALARM_TICK = "tabvault-tick";
 const ALARM_TICK_PERIOD_MIN = 1; // run rules every minute
+
+// Creates (or re-confirms) the periodic sweep alarm and logs the outcome so
+// "the alarm was never created" and "the alarm fires but the callback doesn't
+// run" are distinguishable from the console alone.
+async function ensureTickAlarm() {
+  chrome.alarms.create(ALARM_TICK, { periodInMinutes: ALARM_TICK_PERIOD_MIN });
+  try {
+    const alarm = await chrome.alarms.get(ALARM_TICK);
+    tvLog(`alarm-created name=${ALARM_TICK} periodInMinutes=${ALARM_TICK_PERIOD_MIN} scheduledTime=${alarm ? new Date(alarm.scheduledTime).toISOString() : "MISSING"}`);
+  } catch (err) {
+    tvLog(`alarm-created name=${ALARM_TICK} verify-error=${err?.message || err}`);
+  }
+}
 const SUSPENDED_PAGE = chrome.runtime.getURL("suspended/suspended.html");
 const STORAGE_KEY_SETTINGS = "settings";
 const STORAGE_KEY_STATS = "stats";
@@ -63,6 +76,11 @@ const PENDING_DISCARD_STALE_MS = 10 * 60_000; // drop an entry that never resolv
 function tvLog(...args) {
   console.log("[TabVault]", ...args);
 }
+
+// Logs every time the service worker script runs — including MV3 wake-from-idle,
+// not just extension install/reload. If this line is missing from the console,
+// the console was opened on a stale/inactive worker instance, not that nothing ran.
+tvLog("service-worker-loaded", new Date().toISOString());
 
 // In-memory tab activity ledger. Rebuilt on service worker wake.
 // Map<tabId, { lastActiveAt: epoch_ms, hasFormInput: boolean, audible: boolean, isManuallyProtected: boolean }>
@@ -408,13 +426,18 @@ async function getEffectiveTimeoutMs(ctx, settings) {
   // Per-domain (or per-group) rule wins
   const rule = findPerDomainRule(ctx, settings.perDomainRules);
   if (rule) {
-    if (rule.neverSuspend) return Infinity;
+    if (rule.neverSuspend) {
+      tvLog(`effective-timeout url=${ctx.url} source=per-domain-rule result=neverSuspend`);
+      return Infinity;
+    }
     if (typeof rule.suspendAfterMinutes === "number") {
+      tvLog(`effective-timeout url=${ctx.url} source=per-domain-rule minutes=${rule.suspendAfterMinutes}`);
       return rule.suspendAfterMinutes * 60_000;
     }
   }
 
   let minutes = settings.suspendAfterMinutes;
+  tvLog(`effective-timeout url=${ctx.url} base=${minutes} (settings.suspendAfterMinutes, as loaded from storage)`);
 
   // Schedule (work hours)
   if (settings.schedule.enabled) {
@@ -425,6 +448,7 @@ async function getEffectiveTimeoutMs(ctx, settings) {
     minutes = (inDays && inHours)
       ? settings.schedule.workSuspendAfterMinutes
       : settings.schedule.offSuspendAfterMinutes;
+    tvLog(`effective-timeout url=${ctx.url} schedule-applied inWorkHours=${inDays && inHours} minutes=${minutes}`);
   }
 
   // Battery aware
@@ -432,6 +456,7 @@ async function getEffectiveTimeoutMs(ctx, settings) {
     const onBattery = await isOnBattery();
     if (onBattery) {
       minutes = Math.min(minutes, settings.power.batterySuspendAfterMinutes);
+      tvLog(`effective-timeout url=${ctx.url} battery-applied minutes=${minutes}`);
     }
   }
 
@@ -440,6 +465,9 @@ async function getEffectiveTimeoutMs(ctx, settings) {
     const free = await getFreeMemoryMB();
     if (free !== null && free < settings.memoryPressure.thresholdMB) {
       minutes = Math.min(minutes, settings.memoryPressure.aggressiveSuspendAfterMinutes);
+      tvLog(`effective-timeout url=${ctx.url} memory-pressure-applied freeMB=${free} thresholdMB=${settings.memoryPressure.thresholdMB} minutes=${minutes}`);
+    } else {
+      tvLog(`effective-timeout url=${ctx.url} memory-pressure-enabled freeMB=${free} thresholdMB=${settings.memoryPressure.thresholdMB} triggered=false`);
     }
   }
 
@@ -451,13 +479,20 @@ async function getEffectiveTimeoutMs(ctx, settings) {
     if (entry && entry.visits >= settings.smart.visitsThreshold) {
       // Frequent — be lazy about suspending
       minutes *= settings.smart.frequentTabMultiplier;
+      tvLog(`effective-timeout url=${ctx.url} smart-frequent visits=${entry.visits} threshold=${settings.smart.visitsThreshold} multiplier=${settings.smart.frequentTabMultiplier} minutes=${minutes}`);
     } else if (entry && entry.visits === 1) {
       // Probably one-off — reclaim sooner
       minutes *= settings.smart.rareTabMultiplier;
+      tvLog(`effective-timeout url=${ctx.url} smart-rare visits=1 multiplier=${settings.smart.rareTabMultiplier} minutes=${minutes}`);
+    } else {
+      tvLog(`effective-timeout url=${ctx.url} smart-no-multiplier visits=${entry?.visits ?? 0} minutes=${minutes}`);
     }
   }
 
-  return Math.max(1, minutes) * 60_000;
+  const finalMinutes = Math.max(1, minutes);
+  const finalMs = finalMinutes * 60_000;
+  tvLog(`effective-timeout url=${ctx.url} FINAL minutes=${finalMinutes} ms=${finalMs}`);
+  return finalMs;
 }
 
 function isInTimeRange(date, startStr, endStr) {
@@ -994,7 +1029,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   }
   await runOneTimeMigrations();
 
-  chrome.alarms.create(ALARM_TICK, { periodInMinutes: ALARM_TICK_PERIOD_MIN });
+  await ensureTickAlarm();
   buildContextMenus();
   refreshFocusedWindowId();
 
@@ -1004,7 +1039,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-  chrome.alarms.create(ALARM_TICK, { periodInMinutes: ALARM_TICK_PERIOD_MIN });
+  await ensureTickAlarm();
   buildContextMenus();
   refreshFocusedWindowId();
   await runOneTimeMigrations();
@@ -1062,6 +1097,7 @@ chrome.runtime.onStartup.addListener(async () => {
 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  tvLog(`alarm-fired name=${alarm.name}`);
   if (alarm.name === ALARM_TICK) {
     await runSweep();
     return;
@@ -1077,8 +1113,12 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 });
 
 async function runSweep() {
+  tvLog("sweep-start");
   const settings = await getSettings();
-  if (!settings.enabled) return;
+  if (!settings.enabled) {
+    tvLog("sweep-end reason=disabled candidates=0 suspended=0");
+    return;
+  }
 
   await refreshFocusedWindowId();
 
@@ -1094,10 +1134,48 @@ async function runSweep() {
   }, { ttlMs: 60000 });
 
   const tabs = await chrome.tabs.query({});
+  let suspendedCount = 0;
   for (const tab of tabs) {
+    // Diagnostic snapshot — read-only, computed independently of shouldSuspend()'s
+    // own logic so this can't mask or alter the real decision. tabState is the
+    // in-memory activity ledger keyed on our own onActivated/onUpdated events; it
+    // is rebuilt from scratch on every service-worker wake and is NOT the same
+    // as Chrome's own tab.lastAccessed, which is included below for comparison.
+    const state = tabState.get(tab.id);
+    const hasTabStateEntry = state?.lastActiveAt != null;
+    const effectiveLastActiveAt = state?.lastActiveAt ?? Date.now();
+    const idleMs = Date.now() - effectiveLastActiveAt;
+
+    let effectiveTimeoutMs = null;
+    try {
+      const ctx = await buildTabContext(tab);
+      effectiveTimeoutMs = await getEffectiveTimeoutMs(ctx, settings);
+    } catch (_) {}
+
+    tvLog(
+      `sweep-tab tabId=${tab.id}`,
+      `url=${tab.url}`,
+      `title=${JSON.stringify(tab.title || "")}`,
+      `active=${tab.active}`,
+      `pinned=${tab.pinned}`,
+      `audible=${tab.audible}`,
+      `discarded=${tab.discarded}`,
+      `chromeLastAccessed=${tab.lastAccessed ?? "n/a"}`,
+      `tabStateLastActiveAt=${state?.lastActiveAt ?? "NONE"}`,
+      `lastActiveSource=${hasTabStateEntry ? "tabState" : "FALLBACK-TO-NOW (no tabState entry — idle looks like 0)"}`,
+      `idleSec=${Math.round(idleMs / 1000)}`,
+      `configuredSuspendAfterMinutes=${settings.suspendAfterMinutes}`,
+      `effectiveTimeoutSec=${effectiveTimeoutMs != null ? Math.round(effectiveTimeoutMs / 1000) : "n/a"}`
+    );
+
     const decision = await shouldSuspend(tab, settings);
+
     if (decision.suspend) {
-      await suspendTab(tab.id);
+      tvLog(`sweep-tab tabId=${tab.id} idle=${Math.round((decision.idleMs ?? 0) / 1000)}s timeout=${Math.round((decision.timeoutMs ?? 0) / 1000)}s eligible=true`);
+      const ok = await suspendTab(tab.id);
+      if (ok) suspendedCount++;
+    } else {
+      tvLog(`sweep-skip tabId=${tab.id} reason=${decision.reason} idle=${decision.idleMs != null ? Math.round(decision.idleMs / 1000) + "s" : "n/a"} timeout=${decision.timeoutMs != null ? Math.round(decision.timeoutMs / 1000) + "s" : "n/a"}`);
     }
   }
 
@@ -1109,6 +1187,17 @@ async function runSweep() {
   } catch (_) {}
 
   scheduleActiveSessionPersistence();
+  tvLog(`sweep-end candidates=${tabs.length} suspended=${suspendedCount}`);
+}
+
+// Manual trigger for debugging from the service worker's own DevTools console
+// (chrome://extensions -> TabVault -> "service worker" -> Console tab):
+//   tabVaultRunSweep()
+// Lets you distinguish "the alarm never fires" from "the alarm fires but the
+// sweep exits early" from "the sweep runs but skips every tab" without waiting
+// for the real timer.
+if (typeof self !== "undefined") {
+  self.tabVaultRunSweep = () => runSweep();
 }
 
 // Tab activity tracking
@@ -1349,6 +1438,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
       switch (msg?.type) {
+        case "debug-run-sweep":
+          await runSweep();
+          sendResponse({ ok: true });
+          break;
         case "get-settings":
           sendResponse({ ok: true, data: await getSettings() });
           break;

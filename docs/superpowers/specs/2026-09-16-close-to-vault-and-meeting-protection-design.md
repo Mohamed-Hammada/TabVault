@@ -1,10 +1,18 @@
-# Close-to-Vault and Meeting Protection
+# Seamless Suspension and Meeting Protection
+
+*(Originally titled "Close-to-Vault and Meeting Protection" — Part 1 was
+renamed and re-scoped below after the user clarified their actual intent
+was not the close-and-reopen design that name implied; the filename is
+kept as-is for link/commit-history continuity.)*
 
 Date: 2026-09-16
-Status: Part 2 (Meeting Protection) implemented on `feature/meeting-protection`,
-revised 2026-09-16 after code review (see "Post-review amendments" below).
-Part 1 (Close-to-Vault) is **not implemented** — this branch is meeting
-protection only; Part 1 remains a separate, not-yet-started plan.
+Status: Part 2 (Meeting Protection) implemented on `main` (merged from
+`feature/meeting-protection`, revised twice after code review — see
+"Post-review amendments" below). Part 1 was re-scoped from a
+close-and-reopen design ("Close-to-Vault") to **Seamless Suspension with
+Automatic Restoration**, and turns out to already be fully implemented and
+tested — see "Part 1 (revised)" below. No new code is pending for either
+part as of this revision.
 
 ## Post-review amendments (2026-09-16)
 
@@ -83,94 +91,90 @@ issues in `content-mainworld.js`, fixed as follows:
 
 ## Problem
 
-Two related gaps in the current suspend/restore system:
+Two related gaps, as originally scoped:
 
-1. **Suspend doesn't free the tab slot.** Today "suspend" navigates the same
-   tab to `suspended/suspended.html` (`background.js`, `chrome.tabs.update`)
-   and keeps it alive in the tab strip. The tab itself, not just its content,
-   should be closed to actually reclaim the slot, while its state (scroll,
-   form data, screenshot) is cached locally so the user can get it back.
+1. ~~Suspend doesn't free the tab slot~~ — **superseded, see "Part 1
+   revised" below.** The original wording of this problem asked for the
+   original tab to be *closed* (`chrome.tabs.remove`) with a separate cache
+   +restore surface. Follow-up conversation with the user (2026-09-16)
+   clarified that this was never the actual intent: the desired behavior —
+   same `tabId`/index/group/pinned-state preserved, a custom in-place
+   suspended page showing title/favicon/URL/screenshot, automatic restore
+   on tab activation with no click required, scroll position restored — is
+   the **existing "replace" suspend strategy already in this codebase**,
+   not a new close-and-reopen mechanism. No vault registry, no New Tab
+   override, no `chrome.tabs.remove` — see below.
 2. **Active meetings get suspended.** The only protections against
    suspension today are `tab.audible` (Chrome's "currently outputting sound"
    flag) and recent user interaction (`lastActiveAt`). A muted meeting tab,
    or one where the user is only listening, is neither audible nor
    interacted-with, so it silently crosses the 30-minute idle threshold and
    gets suspended mid-call. There is no signal today that says "this tab has
-   a live call."
+   a live call." — **Implemented, see "Meeting protection" below.**
 
 Both features must not regress any existing suspend/restore/dashboard
 behavior.
 
-## Part 1 — Close-to-Vault
+## Part 1 (revised) — Seamless Suspension with Automatic Restoration
 
-### Data model: the Vault registry
+**Status: already implemented and tested prior to this spec** — this
+section documents and validates existing behavior rather than proposing new
+work, since the originally-planned Close-to-Vault direction (above) turned
+out not to be what was wanted.
 
-New module `lib/vault-store.js`, persisted the same way `snapshot-store.js`
-is. One entry per closed-and-cached tab:
+The user's requirement, restated: suspending a tab must feel like the tab
+never left — same `tabId`, same position/group/pinned state, a lightweight
+in-place placeholder carrying the original title/favicon/URL/preview, and
+returning to it (by activating the tab — no button click required) brings
+back the exact original page, title, and scroll position, with the
+placeholder simply gone. Explicitly *not* wanted: closing the original tab
+and opening a replacement (`chrome.tabs.remove` + a new tab/window
+surface), because that reshuffles tab order, group membership, pinned
+state, and tab-to-tab relationships that a same-tab in-place swap avoids
+entirely.
 
-```
-{
-  id,            // vault entry id (not a chrome tab id — the tab is gone)
-  url,
-  title,         // preserved from the live tab, not a generic placeholder
-  favIconUrl,
-  windowId,
-  groupId,
-  pinned,
-  closedAt,
-  closeReason,   // "idle-timeout" | "manual" | ...
-  snapshotRef    // id into the existing snapshot store (scroll/form/screenshot)
-}
-```
+This maps directly onto the codebase's `strategy: "replace"` suspend mode
+(the default, `DEFAULT_SETTINGS.strategy` in `background.js`), not
+`chrome.tabs.discard()` (the alternate `"discard"` strategy, which is
+Chrome's native discard and gives no control over title/preview — exactly
+the limitation the user flagged). Verified component-by-component:
 
-The snapshot itself is produced by the existing `lib/snapshot.js` pipeline —
-this feature does not duplicate that capture logic, it only changes what
-happens to the tab afterward.
+- **Same tab, no close/reopen**: `suspendTab()` in `background.js` calls
+  `chrome.tabs.update(tabId, { url: suspendedUrl })` — the same `tabId`
+  stays in the tab strip at the same index, group, and pinned state the
+  whole time. `chrome.tabs.remove` is never called on the "replace" path.
+- **Custom placeholder page**: `suspended/suspended.html` +
+  `suspended.js` render the original title (`document.getElementById(
+  "title").textContent`), favicon (`<link rel="icon">` swapped to the
+  original site's), the original URL (displayed and used as the restore
+  target), and a captured screenshot/preview (`lib/screenshot.js`
+  captures it pre-suspend; `suspended.js`'s `renderScreenshotPreview`
+  displays it, falling back to a domain/reason card when unavailable).
+- **Click to restore**: `suspended.js`'s `restore()` function, wired to the
+  restore button.
+- **Automatic restore on tab activation, no click needed**: two
+  independent, redundant mechanisms both restore without a click —
+  `background.js`'s `chrome.tabs.onActivated` listener checks
+  `settings.appearance.autoRestoreOnFocus` (default `true`) and calls
+  `restoreTab()` the moment the tab is activated; `suspended.js` itself
+  also restores on `visibilitychange`/immediate-visible as a redundant
+  on-page fallback that keeps the in-page "Restoring…" UI in sync even if
+  triggered from the background listener.
+- **After restore**: `restoreTab()` delegates to
+  `lib/restore-engine.js`'s pipeline — "Load original URL → wait for page
+  readiness → restore scroll position" (`executeScrollRestorationStep`) —
+  which navigates the same tab back to the original URL (the browser sets
+  the tab title from the loaded page itself, no separate title-restore step
+  needed) and reapplies the captured scroll position. `clearWake(tabId)`
+  clears the tab's transient suspension bookkeeping (e.g. any scheduled
+  wake alarm) on success; historical snapshot/screenshot records are
+  intentionally retained for the dashboard's stats/history views rather
+  than deleted, which is an existing, deliberate product choice, not a gap
+  against this requirement.
 
-### Suspend path: snapshot → confirm → close
-
-Where suspend currently does `chrome.tabs.update(tabId, { url: suspendedUrl })`
-(`background.js` around the suspend-execution site), the flow becomes:
-
-1. Run the existing snapshot capture for the tab.
-2. Confirm the snapshot write succeeded (reuse the crash-recovery
-   confirm/lock pattern already used for other snapshot operations).
-3. Write a vault-store entry.
-4. Only then `chrome.tabs.remove(tabId)`.
-
-If step 2 fails, abort and leave the tab untouched. Unlike discard-mode,
-there is no live tab left to fall back to once it's removed, so we never
-close on an unconfirmed cache.
-
-**This path is gated by the meeting-protection check from Part 2** — see
-"Centralized guard" below. A tab with a confirmed or probable active call is
-never passed into this flow.
-
-### Keeping dashboard/LRU/eligibility code working
-
-`lib/dashboard-service.js` functions (`getSuspendedTabs`, `getActiveTabs`,
-`getEligibleTabsToSuspend`, group summaries, etc.) all operate on a plain
-array of tab-shaped objects — they don't call `chrome.tabs.query()`
-themselves. Before invoking them, background merges live
-`chrome.tabs.query()` results with **synthetic tab-like objects** built from
-vault-store entries, shaped so `isSuspendedTab()` and friends treat them the
-same as a live suspended tab. Net effect: no changes needed inside
-`dashboard-service.js` — vaulted tabs simply appear in the same lists that
-suspended tabs appear in today.
-
-### Restore surface: New Tab override
-
-`manifest.json` gains:
-
-```json
-"chrome_url_overrides": { "newtab": "newtab/newtab.html" }
-```
-
-A minimal new page — not a full New Tab replacement (no search bar, no
-shortcuts grid) — showing a "Recently closed by TabVault" list: title,
-favicon, url, closedAt, click to restore. This is additive; it doesn't touch
-the existing popup/dashboard, which also keep showing vaulted tabs per the
-merge above.
+No code changes were needed for this section — it exists and is covered by
+`tests/restore_engine.test.js`, `tests/scroll.test.js`,
+`tests/lifecycle.test.js`, and `tests/dashboard.test.js`.
 
 Restoring: `chrome.tabs.create({ url, windowId, index, pinned })` in the
 original position/group/pin state, then the existing restore-engine

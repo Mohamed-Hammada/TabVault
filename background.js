@@ -167,6 +167,7 @@ const DEFAULT_SETTINGS = {
   neverSuspend: {
     pinned: true,
     audible: true,
+    inCall: true,
     hasFormInput: true,
     offline: true,
     onlyTabInWindow: false,
@@ -180,6 +181,18 @@ const DEFAULT_SETTINGS = {
     // { mode: "domain"|"contains"|"exact"|"regex"|"glob", value: "..." }
   ],
   blacklist: [], // force-suspend matches even if they'd normally be skipped
+
+  // Meeting-domain safety floor — protects the whole domain by default,
+  // independent of detected call state. Not proof a call is active; see
+  // lib/call-detection.js for the actual detection logic.
+  knownMeetingDomains: [
+    "meet.google.com",
+    "zoom.us",
+    "teams.microsoft.com",
+    "teams.live.com",
+    "webex.com"
+  ],
+  meetingDomainExceptions: [],
 
   // Per-domain rule overrides
   perDomainRules: [

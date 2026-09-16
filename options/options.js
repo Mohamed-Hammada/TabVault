@@ -92,6 +92,7 @@ function renderAll() {
   // Never suspend
   $("ns-pinned").checked = SETTINGS.neverSuspend.pinned;
   $("ns-audible").checked = SETTINGS.neverSuspend.audible;
+  $("ns-incall").checked = SETTINGS.neverSuspend.inCall;
   $("ns-form").checked = SETTINGS.neverSuspend.hasFormInput;
   $("ns-offline").checked = SETTINGS.neverSuspend.offline;
   $("ns-active").checked = SETTINGS.neverSuspend.activeInAnyWindow;
@@ -603,6 +604,7 @@ function wire() {
   const nsMap = {
     "ns-pinned": "pinned",
     "ns-audible": "audible",
+    "ns-incall": "inCall",
     "ns-form": "hasFormInput",
     "ns-offline": "offline",
     "ns-active": "activeInAnyWindow",

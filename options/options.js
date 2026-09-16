@@ -228,11 +228,13 @@ async function refreshGroupTitles() {
 
 // Mode options shown depend on whether the rule targets a URL or a tab-group title.
 const MODES_URL = [
-  ["domain",   "domain"],
-  ["contains", "contains"],
-  ["exact",    "exact"],
-  ["glob",     "glob"],
-  ["regex",    "regex"],
+  ["domain",     "domain"],
+  ["startsWith", "starts with"],
+  ["endsWith",   "ends with"],
+  ["contains",   "contains"],
+  ["exact",      "exact"],
+  ["glob",       "glob"],
+  ["regex",      "regex"],
 ];
 const MODES_GROUP = [
   ["exact",    "exact"],

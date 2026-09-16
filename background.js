@@ -177,7 +177,7 @@ const DEFAULT_SETTINGS = {
 
   // URL filters — multiple match modes
   whitelist: [
-    // { mode: "domain"|"contains"|"exact"|"regex"|"glob", value: "..." }
+    // { mode: "domain"|"startsWith"|"endsWith"|"contains"|"exact"|"regex"|"glob", value: "..." }
   ],
   blacklist: [], // force-suspend matches even if they'd normally be skipped
 
@@ -365,6 +365,10 @@ function matchRule(ctx, rule) {
       return url === value;
     case "contains":
       return url.includes(value);
+    case "startsWith":
+      return url.startsWith(value);
+    case "endsWith":
+      return url.endsWith(value);
     case "glob":
       return globToRegex(value).test(url);
     case "regex":

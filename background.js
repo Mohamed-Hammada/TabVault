@@ -29,7 +29,8 @@ import {
   serializeAllSessions,
   parseAndValidateSession,
   mergeSessions,
-  parseSuspendedTabInfo
+  parseSuspendedTabInfo,
+  extractDomain
 } from "./lib/dashboard-service.js";
 import {
   getSessionPersistenceManager,
@@ -43,6 +44,12 @@ import {
   getRecoverySummary,
   clearRecoverySummary
 } from "./lib/crash-recovery.js";
+import {
+  deriveFrameLevel,
+  aggregateFrameLevels,
+  resolveEffectiveLevel,
+  shouldProtectTab
+} from "./lib/call-detection.js";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -86,6 +93,39 @@ tvLog("service-worker-loaded", new Date().toISOString());
 // Map<tabId, { lastActiveAt: epoch_ms, hasFormInput: boolean, audible: boolean, isManuallyProtected: boolean }>
 const tabState = new Map();
 const manuallyProtectedTabs = new Set();
+
+// Per-tab aggregated call state. Rebuilt empty on every service-worker
+// restart on purpose — resolveEffectiveLevel() treats a tab with no entry
+// here as "unknown", which is protected, so a restart never accidentally
+// exposes a mid-call tab to suspension while content scripts re-report.
+// Map<tabId, { level: string, lastReportedAt: number, frames: Map<frameId, string> }>
+const tabCallState = new Map();
+tvLog(`service-worker-loaded call-state-map-reset size=${tabCallState.size}`);
+
+function recordFrameCallState(tabId, frameId, level) {
+  const entry = tabCallState.get(tabId) || { level: "none", lastReportedAt: null, frames: new Map() };
+  entry.frames.set(frameId, level);
+  entry.level = aggregateFrameLevels(Array.from(entry.frames.values()));
+  entry.lastReportedAt = Date.now();
+  tabCallState.set(tabId, entry);
+}
+
+async function getEffectiveCallProtection(tab) {
+  const entry = tabCallState.get(tab.id);
+  const effectiveLevel = resolveEffectiveLevel({
+    lastLevel: entry?.level ?? null,
+    lastReportedAt: entry?.lastReportedAt ?? null,
+    now: Date.now()
+  });
+  const settings = await getSettings();
+  const hostname = extractDomain(tab.url);
+  return shouldProtectTab({
+    effectiveLevel,
+    hostname,
+    knownDomains: settings.knownMeetingDomains || [],
+    exceptions: settings.meetingDomainExceptions || []
+  });
+}
 
 // Tracks the currently-focused browser window so "active tab" protection only
 // applies to the tab the user is actually looking at, not to one tab per
@@ -564,6 +604,7 @@ async function shouldSuspend(tab, settings) {
     const ns = settings.neverSuspend;
     if (ns.pinned && tab.pinned) return { suspend: false, reason: "pinned" };
     if (ns.audible && tab.audible) return { suspend: false, reason: "audible" };
+    if (ns.inCall && await getEffectiveCallProtection(tab)) return { suspend: false, reason: "in-call" };
 
     const state = tabState.get(tab.id);
     if (ns.hasFormInput && state?.hasFormInput) {
@@ -779,6 +820,15 @@ async function suspendTab(tabId, opts = {}) {
   if (!tab.url || isInternalUrl(tab.url) || isAlreadySuspended(tab.url)) return false;
 
   tvLog(`suspend:start tabId=${tabId} reason=${opts.reason || "idle_timeout"} url=${tab.url}`);
+
+  // Final guard immediately before the destructive action: a call can start
+  // in the time between the eligibility scan that queued this suspend and
+  // this function actually running, so this is re-checked here even though
+  // shouldSuspend() already checked it once.
+  if (settings.neverSuspend.inCall && await getEffectiveCallProtection(tab)) {
+    tvLog(`suspend:aborted tabId=${tabId} reason=in-call-recheck`);
+    return false;
+  }
 
   const tracker = getSnapshotOperationTracker();
   await tracker.startSnapshot(tabId, { url: tab.url, stage: "suspending" });
@@ -1118,6 +1168,12 @@ chrome.runtime.onStartup.addListener(async () => {
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   tvLog(`alarm-fired name=${alarm.name}`);
   if (alarm.name === ALARM_TICK) {
+    // Ask every tab we're tracking call state for to re-report, so a stale
+    // entry (missed event, tab that's been quiet) can recover before it
+    // decays past "unknown" and before the sweep below acts on it.
+    for (const tabId of tabCallState.keys()) {
+      chrome.tabs.sendMessage(tabId, { type: "request-call-state" }).catch(() => {});
+    }
     await runSweep();
     return;
   }
@@ -1291,6 +1347,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabState.delete(tabId);
   manuallyProtectedTabs.delete(tabId);
+  tabCallState.delete(tabId);
   clearWake(tabId);
   clearPendingDiscard(tabId);
   scheduleActiveSessionPersistence();
@@ -2066,6 +2123,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             sendResponse({ ok: true });
           }
           break;
+        case "report-call-state": {
+          const tabId = sender.tab?.id;
+          const frameId = sender.frameId ?? 0;
+          if (tabId !== undefined) {
+            const hostname = extractDomain(sender.tab?.url || "");
+            const settings = await getSettings();
+            const level = deriveFrameLevel({
+              liveMediaTrackCount: msg.liveMediaTrackCount || 0,
+              screenShareActive: !!msg.screenShareActive,
+              rtcConnectionState: msg.rtcConnectionState || null,
+              isKnownMeetingDomain: (settings.knownMeetingDomains || []).includes(hostname) &&
+                !(settings.meetingDomainExceptions || []).includes(hostname)
+            });
+            recordFrameCallState(tabId, frameId, level);
+          }
+          sendResponse({ ok: true });
+          break;
+        }
         case "save-session": {
           const { [STORAGE_KEY_SESSIONS]: existing = [] } = await chrome.storage.local.get(STORAGE_KEY_SESSIONS);
           existing.push({ name: msg.name || `Session ${new Date().toLocaleString()}`, savedAt: Date.now(), tabs: msg.tabs });

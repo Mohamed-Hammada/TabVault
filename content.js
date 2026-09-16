@@ -317,10 +317,25 @@
   // background.js, which derives the actual protection level (see
   // lib/call-detection.js) — this script only gathers raw signals.
   //
-  // Media elements reflect *current* state regardless of when the underlying
-  // stream was created, which is what makes this work retroactively for
-  // calls that started before this script was injected (extension reload,
-  // content-script reconnect, a tab that was already mid-call).
+  // Two independent sources feed this, deliberately not just one:
+  //
+  // 1. A DOM scan for live <video>/<audio> elements. Media elements reflect
+  //    *current* state regardless of when the underlying stream was
+  //    created, which is what makes this work retroactively for calls that
+  //    started before this script was injected (extension reload,
+  //    content-script reconnect, a tab that was already mid-call) — no
+  //    monkey-patched API call needs to have been observed.
+  //
+  // 2. content-mainworld.js, injected as a separate "world": "MAIN" content
+  //    script. This script (content.js) runs in the isolated world, which
+  //    has its own copies of `navigator`/`RTCPeerConnection` — wrapping
+  //    those APIs *here* would not intercept the page's own calls to them.
+  //    The main-world script does the actual wrapping in the page's real JS
+  //    context and hands signals over via window.postMessage, since a
+  //    MAIN-world script has no access to chrome.* APIs to report directly.
+  //    If that script's wrapping is ever bypassed (raced, blocked, or a
+  //    future Chrome restriction), the DOM scan above still independently
+  //    confirms any call that renders local media, which is the common case.
   function countLiveMediaTracks() {
     let count = 0;
     for (const el of document.querySelectorAll("video, audio")) {
@@ -333,53 +348,25 @@
     return count;
   }
 
+  let getUserMediaActive = false;
   let screenShareActive = false;
   let latestRtcConnectionState = null;
 
-  try {
-    if (navigator.mediaDevices?.getUserMedia) {
-      const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-      navigator.mediaDevices.getUserMedia = function (...args) {
-        return originalGetUserMedia(...args).then((stream) => {
-          scheduleCallStateReport();
-          for (const track of stream.getTracks()) {
-            track.addEventListener("ended", scheduleCallStateReport);
-          }
-          return stream;
-        });
-      };
-    }
+  const MAINWORLD_SOURCE = "tabvault-mainworld";
+  window.addEventListener("message", (event) => {
+    // Only trust messages from this same window (not an embedded iframe,
+    // which gets its own content.js instance) carrying our marker. A hostile
+    // page script sharing this same global could still forge these — the
+    // DOM scan above doesn't depend on this channel being trustworthy.
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data || data.source !== MAINWORLD_SOURCE) return;
 
-    if (navigator.mediaDevices?.getDisplayMedia) {
-      const originalGetDisplayMedia = navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
-      navigator.mediaDevices.getDisplayMedia = function (...args) {
-        return originalGetDisplayMedia(...args).then((stream) => {
-          screenShareActive = true;
-          scheduleCallStateReport();
-          for (const track of stream.getTracks()) {
-            track.addEventListener("ended", () => {
-              screenShareActive = false;
-              scheduleCallStateReport();
-            });
-          }
-          return stream;
-        });
-      };
-    }
-
-    if (typeof RTCPeerConnection === "function") {
-      const OriginalRTCPeerConnection = RTCPeerConnection;
-      window.RTCPeerConnection = function (...args) {
-        const pc = new OriginalRTCPeerConnection(...args);
-        pc.addEventListener("connectionstatechange", () => {
-          latestRtcConnectionState = pc.connectionState;
-          scheduleCallStateReport();
-        });
-        return pc;
-      };
-      window.RTCPeerConnection.prototype = OriginalRTCPeerConnection.prototype;
-    }
-  } catch (_) { /* page CSP or a frozen navigator can block wrapping — DOM scan below still works */ }
+    if ("getUserMediaActive" in data) getUserMediaActive = !!data.getUserMediaActive;
+    if ("screenShareActive" in data) screenShareActive = !!data.screenShareActive;
+    if ("rtcConnectionState" in data) latestRtcConnectionState = data.rtcConnectionState;
+    scheduleCallStateReport();
+  });
 
   let callReportScheduled = false;
   function scheduleCallStateReport() {
@@ -396,6 +383,7 @@
       chrome.runtime.sendMessage({
         type: "report-call-state",
         liveMediaTrackCount: countLiveMediaTracks(),
+        getUserMediaActive,
         screenShareActive,
         rtcConnectionState: latestRtcConnectionState
       });

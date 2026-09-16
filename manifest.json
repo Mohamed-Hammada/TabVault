@@ -13,7 +13,8 @@
     "alarms",
     "contextMenus",
     "notifications",
-    "system.memory"
+    "system.memory",
+    "webNavigation"
   ],
 
   "host_permissions": [
@@ -49,6 +50,13 @@
   },
 
   "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content-mainworld.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"],

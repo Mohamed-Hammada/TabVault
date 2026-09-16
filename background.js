@@ -47,8 +47,7 @@ import {
 import {
   deriveFrameLevel,
   aggregateFrameLevels,
-  resolveEffectiveLevel,
-  shouldProtectTab
+  resolveTabProtection
 } from "./lib/call-detection.js";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -110,18 +109,71 @@ function recordFrameCallState(tabId, frameId, level) {
   tabCallState.set(tabId, entry);
 }
 
+// Removes a single frame's recorded call state and re-aggregates. Used both
+// when a frame starts navigating away (its current document, and whatever
+// call state belonged to it, is going away) and by the periodic
+// reconciliation pass below.
+function dropFrameCallState(tabId, frameId) {
+  const entry = tabCallState.get(tabId);
+  if (!entry || !entry.frames.has(frameId)) return;
+  entry.frames.delete(frameId);
+  entry.level = aggregateFrameLevels(Array.from(entry.frames.values()));
+  tabCallState.set(tabId, entry);
+}
+
+// A frame that reported "confirmed" and then simply disappeared — navigated
+// away without a fresh report yet landing, or was removed from the DOM
+// entirely by the page's own JS (no navigation event fires for that case) —
+// would otherwise sit in tabCallState forever, since resolveEffectiveLevel's
+// staleness decay only ever settles at "unknown," which is itself
+// protective. Reconciling against the tab's actual current frames on every
+// tick is what actually lets a genuinely-gone frame's protection lapse.
+async function pruneStaleCallFrames() {
+  if (!chrome.webNavigation?.getAllFrames) return;
+  for (const [tabId, entry] of tabCallState.entries()) {
+    let liveFrames;
+    try {
+      liveFrames = await chrome.webNavigation.getAllFrames({ tabId });
+    } catch (_) {
+      continue; // Tab may already be gone — chrome.tabs.onRemoved cleanup handles that.
+    }
+    if (!liveFrames) continue;
+    const liveFrameIds = new Set(liveFrames.map(f => f.frameId));
+    let changed = false;
+    for (const frameId of Array.from(entry.frames.keys())) {
+      if (!liveFrameIds.has(frameId)) {
+        entry.frames.delete(frameId);
+        changed = true;
+      }
+    }
+    if (changed) {
+      entry.level = aggregateFrameLevels(Array.from(entry.frames.values()));
+      tabCallState.set(tabId, entry);
+    }
+  }
+}
+
+if (chrome.webNavigation?.onBeforeNavigate) {
+  chrome.webNavigation.onBeforeNavigate.addListener((details) => {
+    dropFrameCallState(details.tabId, details.frameId);
+  });
+}
+
+// Thin async wrapper: gathers the live chrome.storage/in-memory inputs and
+// hands them to the pure resolveTabProtection() guard. Every destructive
+// suspend path calls this same function (see suspendTab() and
+// shouldSuspend()) — resolveTabProtection is unit tested directly in
+// tests/call_detection.test.js so this composition doesn't need a second,
+// chrome-API-dependent test to prove the logic itself is correct.
 async function getEffectiveCallProtection(tab) {
   const entry = tabCallState.get(tab.id);
-  const effectiveLevel = resolveEffectiveLevel({
-    lastLevel: entry?.level ?? null,
-    lastReportedAt: entry?.lastReportedAt ?? null,
-    now: Date.now()
-  });
   const settings = await getSettings();
-  const hostname = extractDomain(tab.url);
-  return shouldProtectTab({
-    effectiveLevel,
-    hostname,
+  return resolveTabProtection({
+    neverSuspendInCall: !!settings.neverSuspend.inCall,
+    level: entry?.level ?? null,
+    lastReportedAt: entry?.lastReportedAt ?? null,
+    now: Date.now(),
+    hostname: extractDomain(tab.url),
     knownDomains: settings.knownMeetingDomains || [],
     exceptions: settings.meetingDomainExceptions || []
   });
@@ -1168,6 +1220,10 @@ chrome.runtime.onStartup.addListener(async () => {
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   tvLog(`alarm-fired name=${alarm.name}`);
   if (alarm.name === ALARM_TICK) {
+    // Drop call-state entries for frames that navigated away or were
+    // removed from the DOM without a report of their own (see
+    // pruneStaleCallFrames' comment) before asking survivors to re-report.
+    await pruneStaleCallFrames();
     // Ask every tab we're tracking call state for to re-report, so a stale
     // entry (missed event, tab that's been quiet) can recover before it
     // decays past "unknown" and before the sweep below acts on it.
@@ -2131,6 +2187,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             const settings = await getSettings();
             const level = deriveFrameLevel({
               liveMediaTrackCount: msg.liveMediaTrackCount || 0,
+              getUserMediaActive: !!msg.getUserMediaActive,
               screenShareActive: !!msg.screenShareActive,
               rtcConnectionState: msg.rtcConnectionState || null,
               isKnownMeetingDomain: (settings.knownMeetingDomains || []).includes(hostname) &&

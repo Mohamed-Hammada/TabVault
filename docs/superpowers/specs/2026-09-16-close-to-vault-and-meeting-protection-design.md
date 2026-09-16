@@ -1,7 +1,61 @@
 # Close-to-Vault and Meeting Protection
 
 Date: 2026-09-16
-Status: Approved design, pending implementation plan
+Status: Part 2 (Meeting Protection) implemented on `feature/meeting-protection`,
+revised 2026-09-16 after code review (see "Post-review amendments" below).
+Part 1 (Close-to-Vault) is **not implemented** — this branch is meeting
+protection only; Part 1 remains a separate, not-yet-started plan.
+
+## Post-review amendments (2026-09-16)
+
+A review of the initial `feature/meeting-protection` implementation raised
+four design gaps, fixed as follows. These amend the "Meeting protection"
+section below rather than replacing it.
+
+1. **Isolated-world wrapping doesn't see the page's own WebRTC calls.**
+   `content.js` (an isolated-world content script) has its own copies of
+   `navigator`/`RTCPeerConnection` — wrapping those from the isolated world
+   never intercepts the page's own calls to them. Fixed by splitting the
+   API-wrapping into a second content script, `content-mainworld.js`,
+   declared with `"world": "MAIN"` in `manifest.json`, which does the actual
+   wrapping in the page's real JS context and hands signals to `content.js`
+   via `window.postMessage` (a MAIN-world script has no `chrome.*` access to
+   report directly). The DOM media-element scan in `content.js` — already
+   present for the "calls that predate injection" case — is the reliable
+   fallback if this wrapping is ever bypassed, since it reads live platform
+   objects directly rather than depending on having observed the API call.
+2. **Only the most recent `RTCPeerConnection` was tracked.** A page can run
+   several simultaneously. `content-mainworld.js` now tracks every
+   connection in a `Set`, removes ones that close/fail, and reports the
+   highest-ranked state across all of them (`connected` > `connecting`/`new`).
+3. **Stale iframe call state could permanently protect a tab.** A frame that
+   reported `confirmed` and then navigated away or was removed from the DOM
+   never updated its entry, and `resolveEffectiveLevel`'s staleness decay
+   only ever bottoms out at `unknown` — itself protective — so a genuinely
+   gone frame could never lapse. Fixed with two active-removal mechanisms in
+   `background.js`: `chrome.webNavigation.onBeforeNavigate` drops a frame's
+   entry the moment it starts navigating away, and a per-tick reconciliation
+   pass (`pruneStaleCallFrames`, via `chrome.webNavigation.getAllFrames`)
+   drops entries for frames that no longer exist at all (DOM-removed
+   iframes, which fire no navigation event). Requires the `webNavigation`
+   permission.
+4. **Guard composition wasn't independently testable.** The per-tab
+   protection decision (call-state + domain floor + the `neverSuspend.inCall`
+   toggle) is now one pure function, `resolveTabProtection()` in
+   `lib/call-detection.js`, called by every destructive suspend path via
+   `getEffectiveCallProtection()` in `background.js`. All suspend
+   entrypoints (scheduled sweep, manual suspend, bulk suspend,
+   memory-pressure-accelerated timeout) funnel through the single
+   `suspendTab()` function, which calls this guard once via `shouldSuspend()`
+   during eligibility scanning and again immediately before the destructive
+   `chrome.tabs.discard`/`chrome.tabs.update` call — confirmed by auditing
+   every call site of `suspendTab()` in `background.js`. `resolveTabProtection`
+   is unit tested directly in `tests/call_detection.test.js` against
+   confirmed/probable/unknown/none and domain-floor combinations, which is
+   what actually proves every destructive path is blocked correctly, since
+   `background.js` itself has no test harness (consistent with the rest of
+   the codebase — `background.js`/`content.js` are intentionally untested
+   glue; all logic worth testing lives in `lib/`).
 
 ## Problem
 

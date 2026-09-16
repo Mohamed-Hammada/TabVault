@@ -7,7 +7,8 @@ import {
   resolveEffectiveLevel,
   shouldProtectFromCallState,
   isKnownMeetingDomain,
-  shouldProtectTab
+  shouldProtectTab,
+  resolveTabProtection
 } from "../lib/call-detection.js";
 
 test("deriveFrameLevel: confirmed for a live media track regardless of mute state", () => {
@@ -201,4 +202,114 @@ test("shouldProtectTab: an ordinary domain with no call and not a meeting domain
     exceptions: []
   });
   assert.equal(protectedTab, false);
+});
+
+test("deriveFrameLevel: confirmed from a bare getUserMedia grant even with no rendered media element (mic-only, audio sent straight to a peer connection)", () => {
+  const level = deriveFrameLevel({
+    liveMediaTrackCount: 0,
+    screenShareActive: false,
+    rtcConnectionState: null,
+    isKnownMeetingDomain: false,
+    getUserMediaActive: true
+  });
+  assert.equal(level, "confirmed");
+});
+
+// ─── resolveTabProtection: the single guard every destructive suspend path uses ───
+
+test("resolveTabProtection: blocks a fresh confirmed call on an ordinary domain", () => {
+  const now = 1_000_000;
+  const blocked = resolveTabProtection({
+    neverSuspendInCall: true,
+    level: "confirmed",
+    lastReportedAt: now - 1000,
+    now,
+    hostname: "example.com",
+    knownDomains: [],
+    exceptions: []
+  });
+  assert.equal(blocked, true);
+});
+
+test("resolveTabProtection: blocks a probable call", () => {
+  const now = 1_000_000;
+  const blocked = resolveTabProtection({
+    neverSuspendInCall: true,
+    level: "probable",
+    lastReportedAt: now - 1000,
+    now,
+    hostname: "example.com",
+    knownDomains: [],
+    exceptions: []
+  });
+  assert.equal(blocked, true);
+});
+
+test("resolveTabProtection: blocks when there is no report at all yet (unknown, e.g. fresh service-worker restart)", () => {
+  const blocked = resolveTabProtection({
+    neverSuspendInCall: true,
+    level: null,
+    lastReportedAt: null,
+    now: Date.now(),
+    hostname: "example.com",
+    knownDomains: [],
+    exceptions: []
+  });
+  assert.equal(blocked, true);
+});
+
+test("resolveTabProtection: blocks a decayed-to-unknown call after a long gap since the last report", () => {
+  const now = 1_000_000;
+  const blocked = resolveTabProtection({
+    neverSuspendInCall: true,
+    level: "confirmed",
+    lastReportedAt: now - 200_000,
+    now,
+    hostname: "example.com",
+    knownDomains: [],
+    exceptions: []
+  });
+  assert.equal(blocked, true);
+});
+
+test("resolveTabProtection: does not block an ordinary page with no call and no domain floor", () => {
+  const now = 1_000_000;
+  const blocked = resolveTabProtection({
+    neverSuspendInCall: true,
+    level: "none",
+    lastReportedAt: now - 1000,
+    now,
+    hostname: "example.com",
+    knownDomains: [],
+    exceptions: []
+  });
+  assert.equal(blocked, false);
+});
+
+test("resolveTabProtection: known meeting domain still blocks even with level 'none'", () => {
+  const now = 1_000_000;
+  const blocked = resolveTabProtection({
+    neverSuspendInCall: true,
+    level: "none",
+    lastReportedAt: now - 1000,
+    now,
+    hostname: "meet.google.com",
+    knownDomains: ["meet.google.com"],
+    exceptions: []
+  });
+  assert.equal(blocked, true);
+});
+
+test("resolveTabProtection: user-disabled neverSuspend.inCall turns off all protection, including the domain floor", () => {
+  const now = 1_000_000;
+  const blocked = resolveTabProtection({
+    neverSuspendInCall: false,
+    level: "confirmed",
+    lastReportedAt: now - 1000,
+    now,
+    hostname: "meet.google.com",
+    knownDomains: ["meet.google.com"],
+    exceptions: []
+  });
+  assert.equal(blocked, false);
 });

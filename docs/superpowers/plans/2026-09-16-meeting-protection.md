@@ -825,4 +825,13 @@ git commit -m "feat: detect active calls in content script and report to backgro
 - **Spec coverage:** confirmed/probable/possible/none/unknown levels (Task 1), mute-doesn't-count-as-stopped (Task 1 signal contract + Task 4 `readyState` filter), pre-injection/reconnect/SW-restart calls (Task 4 DOM scan + Task 3 Step 7), SPA navigation (Task 4 Step 4), iframes (`all_frames: true`, Task 4 Step 1; aggregation, Task 1/3), centralized guard before every destructive action (Task 3 Steps 3–4), periodic revalidation (Task 3 Step 6, Task 4's `setInterval`), domain floor as independent OR'd layer (Task 1 `shouldProtectTab`, Task 2 settings) — all covered.
 - **Placeholder scan:** none found — every step has literal code, not descriptions.
 - **Type consistency:** `deriveFrameLevel`/`aggregateFrameLevels`/`resolveEffectiveLevel`/`shouldProtectFromCallState`/`isKnownMeetingDomain`/`shouldProtectTab` signatures are identical between Task 1's implementation and Task 3's usage.
-- **Scope:** this plan is Part 2 of the spec only. Part 1 (Close-to-Vault) is intentionally out of scope here and should be its own plan once this one is merged, since the two are independently shippable and Part 1's close-to-vault path will call `shouldProtectTab` from this same module once it exists.
+- **Scope:** this plan is Part 2 of the spec only. Part 1 (Close-to-Vault) is intentionally out of scope here and should be its own plan once this one is merged, since the two are independently shippable and Part 1's close-to-vault path will call `shouldProtectTab`/`resolveTabProtection` from this same module once it exists. **Part 1 remains fully unimplemented as of this branch — no close-to-vault or New Tab restore code exists yet.**
+
+## Post-review amendments (2026-09-16)
+
+A code review after the initial implementation found four gaps, addressed as follows (see the spec's own "Post-review amendments" section for the full writeup):
+
+1. Isolated-world API wrapping in `content.js` cannot see the page's own WebRTC calls — added `content-mainworld.js` as a `"world": "MAIN"` content script that does the real wrapping and bridges signals via `window.postMessage`.
+2. `RTCPeerConnection` tracking now covers every live connection (a `Set` in `content-mainworld.js`), not just the most recent one.
+3. Stale iframe call-state entries are now actively dropped via `chrome.webNavigation.onBeforeNavigate` (navigation-away) and a per-tick `pruneStaleCallFrames()` reconciliation against `chrome.webNavigation.getAllFrames` (DOM-removed iframes) — added the `webNavigation` permission.
+4. Extracted `resolveTabProtection()` in `lib/call-detection.js` as the single pure guard every destructive path calls through `getEffectiveCallProtection()`, and added direct unit tests for it in `tests/call_detection.test.js` covering confirmed/probable/unknown/none against both an ordinary domain and the meeting-domain floor.

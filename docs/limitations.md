@@ -49,3 +49,11 @@ TabVault automatically bypasses these tabs from suspension to prevent navigation
 
 - Service workers do not run continuously in the background. Chrome terminates the service worker after approximately 30 seconds of inactivity.
 - Any state stored in memory variables is lost on worker shutdown. TabVault addresses this through persistent storage ledgers (`chrome.storage.local`) that rehydrate on worker wake.
+
+---
+
+## 7. Isolated World vs. Main World for API Interception
+
+- **Content scripts cannot see the page's own API calls by default.** A standard content script runs in an "isolated world" — its own copy of the JS global scope, separate from the page's. Wrapping `navigator.mediaDevices.getUserMedia` or `RTCPeerConnection` from an isolated-world script does not intercept the page's own calls to those APIs, because the page is calling its own, unwrapped copies.
+- TabVault's meeting-protection feature needs to see the page's real WebRTC/media-capture calls, so it injects a second content script declared with `"world": "MAIN"` (`content-mainworld.js`) to do the actual wrapping in the page's real JS context, and bridges signals back to the isolated-world script via `window.postMessage` — a MAIN-world script has no access to `chrome.*` APIs to report through directly.
+- This bridge is a best-effort signal, not a guarantee: a page could theoretically hold a reference to the original, unwrapped API captured before injection, or a future Chrome policy could restrict MAIN-world redefinition of these properties. TabVault's fallback is a direct DOM scan for live `<video>`/`<audio>` elements (`HTMLMediaElement.srcObject`), which reads real platform objects visible from either world regardless of monkey-patching, and independently confirms any call that renders local media.

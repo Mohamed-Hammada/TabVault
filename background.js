@@ -1368,13 +1368,21 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   // If user activated tab and autoRestoreOnFocus is enabled, restore with user priority
   try {
     const settings = await getSettings();
-    if (settings?.appearance?.autoRestoreOnFocus) {
+    const autoRestoreOnFocus = !!settings?.appearance?.autoRestoreOnFocus;
+    if (autoRestoreOnFocus) {
       const tab = await chrome.tabs.get(tabId);
-      if (tab?.url && (isAlreadySuspended(tab.url) || tab.discarded)) {
-        await restoreTab(tabId, { source: "user", priority: RestorePriority.USER_REQUESTED });
+      const eligible = !!(tab?.url && (isAlreadySuspended(tab.url) || tab.discarded));
+      tvLog(`onActivated tabId=${tabId} autoRestoreOnFocus=true eligible=${eligible} url=${tab?.url ?? "unknown"} discarded=${!!tab?.discarded}`);
+      if (eligible) {
+        const ok = await restoreTab(tabId, { source: "user", priority: RestorePriority.USER_REQUESTED });
+        tvLog(`onActivated tabId=${tabId} restoreTab-result ok=${ok}`);
       }
+    } else {
+      tvLog(`onActivated tabId=${tabId} autoRestoreOnFocus=false skip-restore`);
     }
-  } catch (_) {}
+  } catch (err) {
+    tvLog(`onActivated tabId=${tabId} error=${err?.message || err}`);
+  }
 });
 
 chrome.tabs.onCreated.addListener((tab) => {

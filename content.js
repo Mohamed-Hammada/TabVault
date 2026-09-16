@@ -287,6 +287,7 @@
         recordRouteScroll();
         const ret = origPush.apply(this, arguments);
         currentSpaRoute = getRouteKey();
+        scheduleCallStateReport();
         return ret;
       };
     }
@@ -295,18 +296,126 @@
       window.history.replaceState = function (data, unused, url) {
         const ret = origReplace.apply(this, arguments);
         currentSpaRoute = getRouteKey();
+        scheduleCallStateReport();
         return ret;
       };
     }
     window.addEventListener?.("popstate", () => {
       recordRouteScroll();
       currentSpaRoute = getRouteKey();
+      scheduleCallStateReport();
     });
     window.addEventListener?.("hashchange", () => {
       recordRouteScroll();
       currentSpaRoute = getRouteKey();
+      scheduleCallStateReport();
     });
   } catch (_) { /* safe in restricted contexts */ }
+
+  // ─── Call detection ────────────────────────────────────────────────────
+  // Protects meeting tabs from suspension. Signals are reported to
+  // background.js, which derives the actual protection level (see
+  // lib/call-detection.js) — this script only gathers raw signals.
+  //
+  // Media elements reflect *current* state regardless of when the underlying
+  // stream was created, which is what makes this work retroactively for
+  // calls that started before this script was injected (extension reload,
+  // content-script reconnect, a tab that was already mid-call).
+  function countLiveMediaTracks() {
+    let count = 0;
+    for (const el of document.querySelectorAll("video, audio")) {
+      const stream = el.srcObject;
+      if (!stream || typeof stream.getTracks !== "function") continue;
+      for (const track of stream.getTracks()) {
+        if (track.readyState === "live") count++;
+      }
+    }
+    return count;
+  }
+
+  let screenShareActive = false;
+  let latestRtcConnectionState = null;
+
+  try {
+    if (navigator.mediaDevices?.getUserMedia) {
+      const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = function (...args) {
+        return originalGetUserMedia(...args).then((stream) => {
+          scheduleCallStateReport();
+          for (const track of stream.getTracks()) {
+            track.addEventListener("ended", scheduleCallStateReport);
+          }
+          return stream;
+        });
+      };
+    }
+
+    if (navigator.mediaDevices?.getDisplayMedia) {
+      const originalGetDisplayMedia = navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getDisplayMedia = function (...args) {
+        return originalGetDisplayMedia(...args).then((stream) => {
+          screenShareActive = true;
+          scheduleCallStateReport();
+          for (const track of stream.getTracks()) {
+            track.addEventListener("ended", () => {
+              screenShareActive = false;
+              scheduleCallStateReport();
+            });
+          }
+          return stream;
+        });
+      };
+    }
+
+    if (typeof RTCPeerConnection === "function") {
+      const OriginalRTCPeerConnection = RTCPeerConnection;
+      window.RTCPeerConnection = function (...args) {
+        const pc = new OriginalRTCPeerConnection(...args);
+        pc.addEventListener("connectionstatechange", () => {
+          latestRtcConnectionState = pc.connectionState;
+          scheduleCallStateReport();
+        });
+        return pc;
+      };
+      window.RTCPeerConnection.prototype = OriginalRTCPeerConnection.prototype;
+    }
+  } catch (_) { /* page CSP or a frozen navigator can block wrapping — DOM scan below still works */ }
+
+  let callReportScheduled = false;
+  function scheduleCallStateReport() {
+    if (callReportScheduled) return;
+    callReportScheduled = true;
+    requestAnimationFrame(() => {
+      callReportScheduled = false;
+      reportCallState();
+    });
+  }
+
+  function reportCallState() {
+    try {
+      chrome.runtime.sendMessage({
+        type: "report-call-state",
+        liveMediaTrackCount: countLiveMediaTracks(),
+        screenShareActive,
+        rtcConnectionState: latestRtcConnectionState
+      });
+    } catch (_) { /* extension might be reloading */ }
+  }
+
+  chrome.runtime?.onMessage?.addListener((message) => {
+    if (message?.type === "request-call-state") {
+      reportCallState();
+    }
+  });
+
+  // Periodic re-scan as defense in depth for missed track/connection events.
+  setInterval(reportCallState, 5000);
+
+  if (document.readyState === "complete" || document.readyState === "interactive") {
+    reportCallState();
+  } else {
+    window.addEventListener("DOMContentLoaded", reportCallState, { once: true });
+  }
 
   // Handle queries from background for snapshot capture
   chrome.runtime?.onMessage?.addListener((message, sender, sendResponse) => {

@@ -57,6 +57,30 @@ section below rather than replacing it.
    the codebase — `background.js`/`content.js` are intentionally untested
    glue; all logic worth testing lives in `lib/`).
 
+A second review pass on merged `main` (commit `939e1466...`) found two more
+issues in `content-mainworld.js`, fixed as follows:
+
+5. **A single track ending cleared protection even if a sibling track was
+   still live.** `getUserMediaActive`/`screenShareActive` were booleans
+   flipped to `false` on any one track's `"ended"` event — a page with two
+   separate `getUserMedia` grants (e.g. audio and video captured
+   independently) would lose protection the moment either one ended, even
+   with the other still live. Fixed by tracking individual tracks in
+   `activeCaptureTracks`/`activeScreenShareTracks` `Set`s and reporting
+   `size > 0` instead of a shared boolean.
+6. **`RTCPeerConnection` "disconnected" was treated as evidence the call
+   ended.** "disconnected" is WebRTC's transient state for a network
+   hiccup (ICE renegotiating, a Wi-Fi blip) and commonly self-heals within
+   seconds — Chrome only moves to `"failed"`/`"closed"` once the underlying
+   failure is actually confirmed. `content-mainworld.js`'s `aggregateRtcState`
+   now ranks `"disconnected"` alongside `"connecting"`/`"new"` instead of
+   excluding it, and `deriveFrameLevel` in `lib/call-detection.js` maps
+   `"disconnected"` to `probable` (protected, not confirmed) rather than
+   falling through toward `possible`/`none` — giving the connection a grace
+   window to recover instead of dropping protection immediately. A live
+   local media track still overrides this and reports `confirmed`
+   regardless of the transport's momentary state.
+
 ## Problem
 
 Two related gaps in the current suspend/restore system:

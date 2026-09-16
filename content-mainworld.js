@@ -31,9 +31,25 @@
   // single connection dropping to "closed" must not erase the others.
   const activeConnections = new Set();
 
+  // A page can call getUserMedia/getDisplayMedia more than once (separate
+  // audio and video captures, a second grant after a device switch, etc.).
+  // Tracking individual *tracks* rather than a single boolean means one
+  // track ending (e.g. the camera track stops because the user toggled
+  // their camera off, but the mic track is still live) doesn't wipe out
+  // protection for the other, still-active capture.
+  const activeCaptureTracks = new Set();
+  const activeScreenShareTracks = new Set();
+
+  // A connection reporting "disconnected" (a transient network hiccup — ICE
+  // renegotiating, a Wi-Fi blip) is not the same as one that's actually
+  // gone. Ranked alongside "connecting"/"new" (both resolve to "probable" in
+  // lib/call-detection.js) rather than being excluded, so a brief network
+  // interruption doesn't drop protection outright — only an explicit
+  // "closed"/"failed" (which Chrome moves to once the underlying failure is
+  // confirmed, not instantly) removes the connection below.
   function aggregateRtcState() {
     let best = null;
-    const rank = { closed: -1, failed: -1, disconnected: 0, new: 1, connecting: 1, connected: 2 };
+    const rank = { disconnected: 1, new: 1, connecting: 1, connected: 2 };
     for (const pc of activeConnections) {
       const state = pc.connectionState;
       if (state === "closed" || state === "failed") continue;
@@ -59,10 +75,14 @@
       const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
       navigator.mediaDevices.getUserMedia = function (...args) {
         return originalGetUserMedia(...args).then((stream) => {
-          postSignal({ getUserMediaActive: true });
           for (const track of stream.getTracks()) {
-            track.addEventListener("ended", () => postSignal({ getUserMediaActive: false }));
+            activeCaptureTracks.add(track);
+            track.addEventListener("ended", () => {
+              activeCaptureTracks.delete(track);
+              postSignal({ getUserMediaActive: activeCaptureTracks.size > 0 });
+            });
           }
+          postSignal({ getUserMediaActive: activeCaptureTracks.size > 0 });
           return stream;
         });
       };
@@ -72,10 +92,14 @@
       const originalGetDisplayMedia = navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
       navigator.mediaDevices.getDisplayMedia = function (...args) {
         return originalGetDisplayMedia(...args).then((stream) => {
-          postSignal({ screenShareActive: true });
           for (const track of stream.getTracks()) {
-            track.addEventListener("ended", () => postSignal({ screenShareActive: false }));
+            activeScreenShareTracks.add(track);
+            track.addEventListener("ended", () => {
+              activeScreenShareTracks.delete(track);
+              postSignal({ screenShareActive: activeScreenShareTracks.size > 0 });
+            });
           }
+          postSignal({ screenShareActive: activeScreenShareTracks.size > 0 });
           return stream;
         });
       };

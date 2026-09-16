@@ -75,6 +75,32 @@ test("deriveFrameLevel: probable for a connecting RTCPeerConnection with no live
   assert.equal(level, "probable");
 });
 
+test("deriveFrameLevel: probable (not dropped) for a transiently-disconnected RTCPeerConnection with no live track", () => {
+  // "disconnected" is WebRTC's transient network-hiccup state — a brief
+  // Wi-Fi blip or ICE renegotiation, not proof the call ended. It must not
+  // drop straight to none/possible while there's a chance it self-heals.
+  const level = deriveFrameLevel({
+    liveMediaTrackCount: 0,
+    screenShareActive: false,
+    rtcConnectionState: "disconnected",
+    isKnownMeetingDomain: false
+  });
+  assert.equal(level, "probable");
+  assert.equal(shouldProtectFromCallState(level), true);
+});
+
+test("deriveFrameLevel: a disconnected RTCPeerConnection does not override a live local track's confirmed level", () => {
+  // liveMediaTrackCount takes priority regardless of connection state — the
+  // local capture staying live is stronger evidence than the transport hiccup.
+  const level = deriveFrameLevel({
+    liveMediaTrackCount: 1,
+    screenShareActive: false,
+    rtcConnectionState: "disconnected",
+    isKnownMeetingDomain: false
+  });
+  assert.equal(level, "confirmed");
+});
+
 test("deriveFrameLevel: possible for a known meeting domain with no call signals", () => {
   const level = deriveFrameLevel({
     liveMediaTrackCount: 0,

@@ -61,8 +61,15 @@
   }
 
   function postSignal(partial) {
+    // A sandboxed iframe (or about:blank/data: document) reports its origin
+    // as the literal string "null", which is truthy — targeting that string
+    // as a postMessage targetOrigin does not reliably reach the isolated
+    // world's listener in the same window, silently losing this frame's
+    // call signals. Treat "null" the same as an unset origin.
+    const origin = window.location.origin;
+    const targetOrigin = (!origin || origin === "null") ? "*" : origin;
     try {
-      window.postMessage({ source: MESSAGE_SOURCE, ...partial }, window.location.origin || "*");
+      window.postMessage({ source: MESSAGE_SOURCE, ...partial }, targetOrigin);
     } catch (_) { /* detached window during navigation */ }
   }
 

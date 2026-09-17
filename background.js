@@ -89,9 +89,59 @@ function tvLog(...args) {
 tvLog("service-worker-loaded", new Date().toISOString());
 
 // In-memory tab activity ledger. Rebuilt on service worker wake.
-// Map<tabId, { lastActiveAt: epoch_ms, hasFormInput: boolean, audible: boolean, isManuallyProtected: boolean }>
+// Map<tabId, { lastActiveAt: epoch_ms, hasFormInput: boolean, audible: boolean, isManuallyProtected: boolean, formInputFrames?: Map<frameId, {hasFormInput, details}> }>
 const tabState = new Map();
 const manuallyProtectedTabs = new Set();
+
+// content_scripts' all_frames was turned on (for call detection — see
+// tabCallState below) which means content.js's independent form-dirty
+// tracker now also runs in every iframe, not just the top frame. Each
+// frame's "report-form-input" message must not simply overwrite the tab's
+// shared hasFormInput flag — an iframe reporting "clean" would otherwise
+// clear protection for a dirty top-frame form (or vice versa). Instead,
+// track each frame's own state and protect the tab if ANY frame is dirty.
+function recordFrameFormInput(tabId, frameId, hasFormInput, details) {
+  const s = tabState.get(tabId) || {};
+  const frames = s.formInputFrames || (s.formInputFrames = new Map());
+  const prevHasFormInput = s.hasFormInput;
+  frames.set(frameId, { hasFormInput: !!hasFormInput, details: details || null });
+  const dirty = Array.from(frames.values()).find(f => f.hasFormInput);
+  s.hasFormInput = !!dirty;
+  s.formInputDetails = dirty ? dirty.details : null;
+  tabState.set(tabId, s);
+  return { prevHasFormInput, nowHasFormInput: s.hasFormInput };
+}
+
+function dropFrameFormInput(tabId, frameId) {
+  const s = tabState.get(tabId);
+  if (!s?.formInputFrames?.has(frameId)) return;
+  s.formInputFrames.delete(frameId);
+  const dirty = Array.from(s.formInputFrames.values()).find(f => f.hasFormInput);
+  s.hasFormInput = !!dirty;
+  s.formInputDetails = dirty ? dirty.details : null;
+  tabState.set(tabId, s);
+}
+
+// Mirrors pruneStaleCallFrames below: a frame that reported dirty form
+// input and then navigated away or was DOM-removed without a final report
+// must not leave the tab permanently marked as having unsaved input.
+async function pruneStaleFormInputFrames() {
+  if (!chrome.webNavigation?.getAllFrames) return;
+  const tracked = Array.from(tabState.entries()).filter(([, s]) => s.formInputFrames?.size > 0);
+  await Promise.all(tracked.map(async ([tabId, s]) => {
+    let liveFrames;
+    try {
+      liveFrames = await chrome.webNavigation.getAllFrames({ tabId });
+    } catch (_) {
+      return;
+    }
+    if (!liveFrames) return;
+    const liveFrameIds = new Set(liveFrames.map(f => f.frameId));
+    for (const frameId of Array.from(s.formInputFrames.keys())) {
+      if (!liveFrameIds.has(frameId)) dropFrameFormInput(tabId, frameId);
+    }
+  }));
+}
 
 // Per-tab aggregated call state. Rebuilt empty on every service-worker
 // restart on purpose — resolveEffectiveLevel() treats a tab with no entry
@@ -130,14 +180,18 @@ function dropFrameCallState(tabId, frameId) {
 // tick is what actually lets a genuinely-gone frame's protection lapse.
 async function pruneStaleCallFrames() {
   if (!chrome.webNavigation?.getAllFrames) return;
-  for (const [tabId, entry] of tabCallState.entries()) {
+  // One chrome.webNavigation round-trip per tracked tab — issued
+  // concurrently rather than awaited one at a time in the loop, since with
+  // several tabs tracked this runs every minute and shouldn't scale
+  // linearly with tab count before the sweep that follows it.
+  await Promise.all(Array.from(tabCallState.entries()).map(async ([tabId, entry]) => {
     let liveFrames;
     try {
       liveFrames = await chrome.webNavigation.getAllFrames({ tabId });
     } catch (_) {
-      continue; // Tab may already be gone — chrome.tabs.onRemoved cleanup handles that.
+      return; // Tab may already be gone — chrome.tabs.onRemoved cleanup handles that.
     }
-    if (!liveFrames) continue;
+    if (!liveFrames) return;
     const liveFrameIds = new Set(liveFrames.map(f => f.frameId));
     let changed = false;
     for (const frameId of Array.from(entry.frames.keys())) {
@@ -150,12 +204,13 @@ async function pruneStaleCallFrames() {
       entry.level = aggregateFrameLevels(Array.from(entry.frames.values()));
       tabCallState.set(tabId, entry);
     }
-  }
+  }));
 }
 
 if (chrome.webNavigation?.onBeforeNavigate) {
   chrome.webNavigation.onBeforeNavigate.addListener((details) => {
     dropFrameCallState(details.tabId, details.frameId);
+    dropFrameFormInput(details.tabId, details.frameId);
   });
 }
 
@@ -1224,10 +1279,11 @@ chrome.runtime.onStartup.addListener(async () => {
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   tvLog(`alarm-fired name=${alarm.name}`);
   if (alarm.name === ALARM_TICK) {
-    // Drop call-state entries for frames that navigated away or were
-    // removed from the DOM without a report of their own (see
+    // Drop call-state and form-input entries for frames that navigated
+    // away or were removed from the DOM without a report of their own (see
     // pruneStaleCallFrames' comment) before asking survivors to re-report.
     await pruneStaleCallFrames();
+    await pruneStaleFormInputFrames();
     // Ask every tab we're tracking call state for to re-report, so a stale
     // entry (missed event, tab that's been quiet) can recover before it
     // decays past "unknown" and before the sweep below acts on it.
@@ -1394,8 +1450,11 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.audible !== undefined) s.audible = changeInfo.audible;
   if (changeInfo.status === "complete") s.lastActiveAt = s.lastActiveAt || Date.now();
   if (changeInfo.url) {
+    // Main-frame navigation replaces the whole document (and all its
+    // iframes), so every previously-tracked frame's dirty state is stale.
     s.hasFormInput = false;
     s.formInputDetails = null;
+    if (s.formInputFrames) s.formInputFrames.clear();
   }
   tabState.set(tabId, s);
   scheduleActiveSessionPersistence();
@@ -2168,24 +2227,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "report-form-input":
           {
             const tabId = sender.tab?.id;
+            const frameId = sender.frameId ?? 0;
             if (tabId !== undefined) {
-              const s = tabState.get(tabId) || {};
-              const prevHasFormInput = s.hasFormInput;
-              s.hasFormInput = !!msg.hasFormInput;
-              s.formInputDetails = msg.details || null;
-              tabState.set(tabId, s);
+              const { prevHasFormInput, nowHasFormInput } = recordFrameFormInput(tabId, frameId, msg.hasFormInput, msg.details);
 
               if (msg.hasFormInput && msg.details) {
                 tvLog(
-                  `form-input detected tabId=${tabId}`,
+                  `form-input detected tabId=${tabId} frameId=${frameId}`,
                   `elementType=${msg.details.elementType}`,
                   `selector=${msg.details.selector}`,
                   `hasValue=${msg.details.hasValue}`,
                   `valueChanged=${msg.details.valueChanged}`,
                   `isUserEditable=${msg.details.isUserEditable}`
                 );
-              } else if (!msg.hasFormInput && prevHasFormInput) {
-                tvLog(`form-input cleared tabId=${tabId}`);
+              } else if (!msg.hasFormInput && prevHasFormInput && !nowHasFormInput) {
+                // Only "cleared" once no OTHER frame is still dirty — a
+                // frame reporting clean while a sibling frame stays dirty
+                // must not log (or act like) the tab itself became clean.
+                tvLog(`form-input cleared tabId=${tabId} frameId=${frameId}`);
               }
             }
             sendResponse({ ok: true });
